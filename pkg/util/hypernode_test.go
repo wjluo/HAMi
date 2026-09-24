@@ -30,12 +30,12 @@ func TestGetNodeHyperNode(t *testing.T) {
 		want   string
 	}{
 		{
-			name:   "nil node returns empty",
+			name:   "nil labels returns empty",
 			labels: nil,
 			want:   "",
 		},
 		{
-			name:   "no hypernode label",
+			name:   "no hypernode labels returns empty",
 			labels: map[string]string{"kubernetes.io/hostname": "node1"},
 			want:   "",
 		},

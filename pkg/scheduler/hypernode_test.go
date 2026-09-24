@@ -21,7 +21,9 @@ import (
 	"testing"
 
 	corev1 "k8s.io/api/core/v1"
+	"k8s.io/apimachinery/pkg/api/resource"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	extenderv1 "k8s.io/kube-scheduler/extender/v1"
 
 	"github.com/Project-HAMi/HAMi/pkg/device"
 	"github.com/Project-HAMi/HAMi/pkg/scheduler/policy"
@@ -185,6 +187,68 @@ func scoresUnchanged(before, after []float32) bool {
 		}
 	}
 	return true
+}
+
+func TestCountHyperNodeRejections(t *testing.T) {
+	failed := map[string]string{
+		"n1": `HyperNodeNotFit: pod requires hypernode "hn-a", node belongs to "hn-b"`,
+		"n2": `HyperNodeNotFit: pod requires hypernode "hn-a", node belongs to ""`,
+		"n3": "unfit",
+	}
+	if got := countHyperNodeRejections(failed); got != 2 {
+		t.Errorf("countHyperNodeRejections() = %d, want 2", got)
+	}
+	if got := countHyperNodeRejections(nil); got != 0 {
+		t.Errorf("countHyperNodeRejections(nil) = %d, want 0", got)
+	}
+	if got := countHyperNodeRejections(map[string]string{"n1": "unfit"}); got != 0 {
+		t.Errorf("countHyperNodeRejections() = %d, want 0 for non-hypernode reasons", got)
+	}
+}
+
+func simulationNode(name, hyperNode string) corev1.Node {
+	labels := map[string]string{}
+	if hyperNode != "" {
+		labels[util.HyperNodeLabelKey] = hyperNode
+	}
+	return corev1.Node{ObjectMeta: metav1.ObjectMeta{
+		Name: name,
+		Labels:      labels,
+		Annotations: map[string]string{"hami.io/node-nvidia-register": `[{"id":"GPU-0","count":8,"devmem":8192,"devcore":100,"type":"NVIDIA-A100","health":true,"devicevendor":"NVIDIA"}]`},
+	}}
+}
+
+func TestFilterSimulationHyperNodeAffinity(t *testing.T) {
+	s := NewScheduler()
+	pod := &corev1.Pod{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:        "sim-pod",
+			Annotations: map[string]string{util.HyperNodeAffinityAnnotationKey: "hn-a"},
+		},
+		Spec: corev1.PodSpec{Containers: []corev1.Container{{
+			Name:  "c1",
+			Resources: corev1.ResourceRequirements{Limits: corev1.ResourceList{
+				corev1.ResourceName("nvidia.com/gpu"): resource.MustParse("1"),
+			}},
+		}}},
+	}
+	args := extenderv1.ExtenderArgs{
+		Pod: pod,
+		Nodes: &corev1.NodeList{Items: []corev1.Node{
+			simulationNode("sim-node-a", "hn-a"),
+			simulationNode("sim-node-b", "hn-b"),
+		}},
+	}
+	res, err := s.filterSimulation(args, device.Resourcereqs(pod))
+	if err != nil {
+		t.Fatalf("filterSimulation returned error: %v", err)
+	}
+	if res.Nodes == nil || len(res.Nodes.Items) != 1 || res.Nodes.Items[0].Name != "sim-node-a" {
+		t.Errorf("expected only sim-node-a to survive hypernode affinity, got %+v", res.Nodes)
+	}
+	if _, ok := res.FailedNodes["sim-node-b"]; !ok {
+		t.Errorf("expected sim-node-b in FailedNodes with HyperNodeNotFit, got %v", res.FailedNodes)
+	}
 }
 
 func TestApplyHyperNodeGroupAffinity(t *testing.T) {

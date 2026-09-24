@@ -18,6 +18,7 @@ package scheduler
 
 import (
 	"fmt"
+	"strings"
 
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/klog/v2"
@@ -26,6 +27,10 @@ import (
 	"github.com/Project-HAMi/HAMi/pkg/scheduler/policy"
 	"github.com/Project-HAMi/HAMi/pkg/util"
 )
+
+// hyperNodeNotFit prefixes the failedNodes reason written by the hard
+// hypernode affinity filter.
+const hyperNodeNotFit = "HyperNodeNotFit"
 
 // filterNodesByHyperNodeAffinity enforces the pod's hard hypernode affinity
 // (hami.io/hypernode-affinity): candidate nodes outside the pinned hypernode
@@ -38,13 +43,26 @@ func filterNodesByHyperNodeAffinity(nodes *map[string]*NodeUsage, task *corev1.P
 	}
 	for nodeID, usage := range *nodes {
 		if hyperNode := util.GetNodeHyperNode(usage.Node); hyperNode != affinity {
-			reason := fmt.Sprintf("HyperNodeNotFit: pod requires hypernode %q, node belongs to %q", affinity, hyperNode)
+			reason := fmt.Sprintf("%s: pod requires hypernode %q, node belongs to %q", hyperNodeNotFit, affinity, hyperNode)
 			failedNodes[nodeID] = reason
 			delete(*nodes, nodeID)
 			klog.V(4).InfoS("Node filtered by hypernode affinity",
 				"pod", klog.KObj(task), "node", nodeID, "required", affinity, "nodeHyperNode", hyperNode)
 		}
 	}
+}
+
+// countHyperNodeRejections returns how many failedNodes entries carry the
+// HyperNodeNotFit reason, so the filter failure event can name the hypernode
+// constraint instead of a generic no-fit message.
+func countHyperNodeRejections(failedNodes map[string]string) int {
+	count := 0
+	for _, reason := range failedNodes {
+		if strings.HasPrefix(reason, hyperNodeNotFit) {
+			count++
+		}
+	}
+	return count
 }
 
 // collectGroupHyperNodes returns the set of hypernodes already occupied by the

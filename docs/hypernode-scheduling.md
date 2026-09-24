@@ -27,12 +27,28 @@ wins. Nodes without a label belong to no hypernode.
 
 ## 2. Pod annotations
 
+Both annotations take effect only for pods that **request HAMi-managed
+resources** (for example `nvidia.com/gpu` or `huawei.com/Ascend910`): a pod
+without device requests never reaches HAMi's filter, and the scheduler logs a
+warning when such a pod carries the annotations. Pin device-less pods with a
+native nodeSelector on the same label instead:
+
+```yaml
+spec:
+  nodeSelector:
+    hami.io/hypernode: supernode-a
+```
+
 ### 2.1 Hard affinity: `hami.io/hypernode-affinity`
 
 Pins a pod to one hypernode. Candidate nodes outside the pinned hypernode are
-rejected during filtering (reported as `HyperNodeNotFit`); if no node of that
-hypernode can host the pod, the pod stays Pending — the same all-or-nothing
-semantics as Volcano's `networkTopology.mode: hard`.
+rejected during filtering with a `HyperNodeNotFit` reason (returned in the
+extender's failedNodes and, when no node fits, named in the pod's scheduling
+event); if no node of that hypernode can host the pod, the pod stays Pending —
+the same all-or-nothing semantics as Volcano's `networkTopology.mode: hard`.
+The filter applies on both the real scheduling path and the simulation path
+(for example the cluster autoscaler), so simulated placements respect the
+pinned performance domain too.
 
 ```yaml
 metadata:

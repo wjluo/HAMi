@@ -1320,6 +1320,14 @@ func (s *Scheduler) Filter(args extenderv1.ExtenderArgs) (*extenderv1.ExtenderFi
 
 	if !hasHAMiResource {
 		klog.V(1).InfoS("Pod does not request any resources", "pod", pod.Name)
+		// Hypernode annotations only take effect on the device-scheduling path
+		// this extender owns; a pod without device requests never reaches the
+		// filter, so say so instead of silently ignoring the annotations.
+		if util.GetHyperNodeAffinityByPod(pod) != "" || util.GetHyperNodeGroupByPod(pod) != "" {
+			klog.Warningf("pod %s/%s carries hypernode annotations but requests no HAMi-managed resources; "+
+				"annotations are ignored, use a native nodeSelector on %s instead",
+				pod.Namespace, pod.Name, util.HyperNodeLabelKey)
+		}
 		// Simulation callers such as the cluster autoscaler send Nodes
 		// instead of NodeNames; echo both back so a pod without HAMi
 		// resources keeps every candidate node on either protocol shape.
@@ -1360,7 +1368,14 @@ func (s *Scheduler) Filter(args extenderv1.ExtenderArgs) (*extenderv1.ExtenderFi
 	if len((*nodeScores).NodeList) == 0 {
 		klog.V(4).InfoS("No available nodes meet the required scores", "pod", pod.Name)
 		s.GetAllocationMetrics().ObserveAllocationFailure("filter", deviceTypeForRequests(resourceReqs), metrics.FailureReasonNoFit)
-		s.recordScheduleFilterResultEvent(pod, EventReasonFilteringFailed, "", fmt.Errorf("no available node, %d nodes do not meet", len(*args.NodeNames)))
+		noFitErr := fmt.Errorf("no available node, %d nodes do not meet", len(*args.NodeNames))
+		// Name the hypernode constraint in the failure event so operators can
+		// tell a capacity problem from a hard-affinity pin.
+		if rejected := countHyperNodeRejections(failedNodes); rejected > 0 {
+			noFitErr = fmt.Errorf("no available node, %d nodes do not meet, %d rejected by hypernode affinity (requires hypernode %q)",
+				len(*args.NodeNames), rejected, util.GetHyperNodeAffinityByPod(pod))
+		}
+		s.recordScheduleFilterResultEvent(pod, EventReasonFilteringFailed, "", noFitErr)
 		return &extenderv1.ExtenderFilterResult{
 			FailedNodes: failedNodes,
 		}, nil
@@ -1415,6 +1430,10 @@ func (s *Scheduler) filterSimulation(args extenderv1.ExtenderArgs, resourceReqs 
 	if err != nil {
 		return nil, err
 	}
+	// The hard hypernode affinity applies on the simulation path exactly as on
+	// the real one, so simulated placements (e.g. cluster autoscaler) respect
+	// the pinned performance domain.
+	filterNodesByHyperNodeAffinity(nodeUsage, args.Pod, failedNodes)
 	klog.V(3).InfoS("Collected simulation node usage for filtering",
 		"pod", klog.KObj(args.Pod),
 		"candidateNodes", len(*nodeUsage),
