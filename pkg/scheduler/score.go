@@ -495,5 +495,8 @@ func (s *Scheduler) calcScoreWithOptions(nodes *map[string]*NodeUsage, resourceR
 	for e := range errCh {
 		errorsSlice = append(errorsSlice, e)
 	}
+	if preferred := s.groupHyperNodePreference(task); len(preferred) > 0 {
+		applyHyperNodeGroupAffinity(&res, userNodePolicy, preferred)
+	}
 	return &res, utilerrors.NewAggregate(errorsSlice)
 }

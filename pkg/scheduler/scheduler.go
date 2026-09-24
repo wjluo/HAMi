@@ -1349,6 +1349,7 @@ func (s *Scheduler) Filter(args extenderv1.ExtenderArgs) (*extenderv1.ExtenderFi
 	if len(failedNodes) != 0 {
 		klog.V(5).InfoS("Nodes failed during usage retrieval", "nodes", failedNodes)
 	}
+	filterNodesByHyperNodeAffinity(nodeUsage, pod, failedNodes)
 	nodeScores, err := s.calcScore(nodeUsage, resourceReqs, pod, failedNodes)
 	if err != nil {
 		err := fmt.Errorf("calcScore failed %v for pod %v", err, pod.Name)
