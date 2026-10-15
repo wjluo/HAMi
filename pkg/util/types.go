@@ -80,6 +80,11 @@ const (
 	GPUSchedulerPolicyMutex SchedulerPolicyName = "mutex"
 	// GPUSchedulerPolicyNuma is GPU use numa scheduler, chained as a sort key alongside binpack/spread.
 	GPUSchedulerPolicyNuma SchedulerPolicyName = "numa"
+	// SuperpodSchedulerPolicyEnable keeps a converged workload inside the
+	// superpod domain it already occupies.
+	SuperpodSchedulerPolicyEnable SchedulerPolicyName = "enable"
+	// SuperpodSchedulerPolicyDisable leaves node choice to binpack/spread alone.
+	SuperpodSchedulerPolicyDisable SchedulerPolicyName = "disable"
 )
 
 const (
@@ -93,6 +98,30 @@ const (
 	// reconciles the scheduler-selected GPU with the NUMA-aligned replica
 	// preferred by kubelet's Topology Manager. See NumaAlignmentMode.
 	NumaAlignmentAnnotationKey = "hami.io/numa-alignment"
+)
+
+// Node-level superpod topology annotations, reported by each vendor's device
+// plugin (or set by an operator for chips without a topology API). They are
+// read-only for HAMi: the scheduler never writes or garbage-collects them.
+const (
+	// TopoSuperPodIDAnnotationKey is the outermost convergence domain. Required
+	// on every node of a superpod cluster.
+	TopoSuperPodIDAnnotationKey = "hami.io/superpodid"
+	// TopoRackIDAnnotationKey is the intermediate tier inside a superpod.
+	// Absent on chips without a rack tier.
+	TopoRackIDAnnotationKey = "hami.io/rackid"
+	// TopoServerIDAnnotationKey is the server index inside a superpod, used for
+	// observability rather than for scheduling decisions.
+	TopoServerIDAnnotationKey = "hami.io/serverid"
+)
+
+// Pod label identifying one inference service. Every Pod sharing a value,
+// including the prefill and decode halves of a PD-disaggregated service, is
+// converged into the same topology domain. The unprefixed spelling is read for
+// compatibility with workloads labelled for the Huawei volcano plugin.
+const (
+	InferServiceIDLabel       = "hami.io/inferserviceid"
+	InferServiceIDLabelLegacy = "inferserviceid"
 )
 
 func (s SchedulerPolicyName) String() string {

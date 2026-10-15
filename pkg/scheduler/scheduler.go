@@ -1418,6 +1418,16 @@ func (s *Scheduler) Filter(args extenderv1.ExtenderArgs) (*extenderv1.ExtenderFi
 	}
 	klog.V(4).Infoln("nodeScores_len=", len((*nodeScores).NodeList))
 	sort.Sort(nodeScores)
+	// Must run before the last element is read: the winner is NodeList[len-1].
+	failedNodes = mergeFailedNodes(failedNodes, s.applySuperpodPolicy(nodeScores, pod))
+	if len((*nodeScores).NodeList) == 0 {
+		klog.V(4).InfoS("Superpod policy left no candidate node", "pod", pod.Name)
+		s.GetAllocationMetrics().ObserveAllocationFailure("filter", deviceTypeForRequests(resourceReqs), metrics.FailureReasonNoFit)
+		s.recordScheduleFilterResultEvent(pod, EventReasonFilteringFailed, "", fmt.Errorf("no available node in the required superpod domain, %d nodes do not meet", len(*args.NodeNames)))
+		return &extenderv1.ExtenderFilterResult{
+			FailedNodes: failedNodes,
+		}, nil
+	}
 	m := (*nodeScores).NodeList[len((*nodeScores).NodeList)-1]
 	klog.InfoS("Scheduling pod to node",
 		"podNamespace", pod.Namespace,
@@ -1483,6 +1493,14 @@ func (s *Scheduler) filterSimulation(args extenderv1.ExtenderArgs, resourceReqs 
 		}, nil
 	}
 	sort.Sort(nodeScores)
+	failedNodes = mergeFailedNodes(failedNodes, s.applySuperpodPolicy(nodeScores, args.Pod))
+	if len(nodeScores.NodeList) == 0 {
+		klog.V(3).InfoS("Superpod policy left no candidate in simulation",
+			"pod", klog.KObj(args.Pod))
+		return &extenderv1.ExtenderFilterResult{
+			FailedNodes: failedNodes,
+		}, nil
+	}
 	bestNodeID := nodeScores.NodeList[len(nodeScores.NodeList)-1].NodeID
 	filteredNodes := make([]corev1.Node, 0, 1)
 	for i := range args.Nodes.Items {
