@@ -1,0 +1,37 @@
+# PD-disaggregated serving that converges into one superpod.
+#
+# Both pods carry the same hami.io/inferserviceid, so HAMi places the decode
+# pod next to the prefill pod: same rack when the chip reports one, otherwise
+# the same superpod. See docs/develop/superpod-topology-affinity.md for how the
+# node annotations get there.
+apiVersion: v1
+kind: Pod
+metadata:
+  name: mindie-prefill
+  labels:
+    hami.io/inferserviceid: llama-service-001
+spec:
+  containers:
+    - name: prefill
+      image: ascendhub.huawei.com/public-ascendhub/ascend-mindspore:23.0.RC3-centos7
+      command: ["bash", "-c", "sleep 86400"]
+      resources:
+        limits:
+          huawei.com/Ascend910A: 1
+          huawei.com/Ascend910A-memory: 8000
+---
+apiVersion: v1
+kind: Pod
+metadata:
+  name: mindie-decode
+  labels:
+    hami.io/inferserviceid: llama-service-001
+spec:
+  containers:
+    - name: decode
+      image: ascendhub.huawei.com/public-ascendhub/ascend-mindspore:23.0.RC3-centos7
+      command: ["bash", "-c", "sleep 86400"]
+      resources:
+        limits:
+          huawei.com/Ascend910A: 1
+          huawei.com/Ascend910A-memory: 8000

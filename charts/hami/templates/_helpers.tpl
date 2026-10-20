@@ -253,11 +253,23 @@ Returns a YAML list that can be used directly or converted to JSON via fromYaml 
 {{- $resources = append $resources (dict "name" .Values.devices.metax.resourceVCountName "ignoredByScheduler" true) -}}
 {{- $resources = append $resources (dict "name" .Values.devices.metax.resourceVCoreName "ignoredByScheduler" true) -}}
 {{- $resources = append $resources (dict "name" .Values.devices.metax.resourceVMemoryName "ignoredByScheduler" true) -}}
-{{/* Ascend resources */}}
-{{- if .Values.devices.ascend.enabled -}}
-{{- range .Values.devices.ascend.customresources -}}
-{{- $resources = append $resources (dict "name" . "ignoredByScheduler" true) -}}
+{{/* Ascend resources: derive from the device config so a chip's count and
+     memory resource names always reach managedResources. Fall back to the
+     explicit customresources list for names that are not in configs. */}}
+{{- $ascendResources := list -}}
+{{- range .Values.devices.ascend.configs -}}
+{{- $ascendResources = append $ascendResources .resourceName -}}
+{{- if .resourceMemoryName -}}
+{{- $ascendResources = append $ascendResources .resourceMemoryName -}}
 {{- end -}}
+{{- end -}}
+{{- if hasKey .Values.devices.ascend "enabled" -}}
+{{- if .Values.devices.ascend.enabled -}}
+{{- $ascendResources = concat $ascendResources (.Values.devices.ascend.customresources | default (list)) -}}
+{{- end -}}
+{{- end -}}
+{{- range (concat $ascendResources (.Values.devices.ascend.customresources | default (list)) | uniq) -}}
+{{- $resources = append $resources (dict "name" . "ignoredByScheduler" true) -}}
 {{- end -}}
 {{/* Mthreads resources */}}
 {{- if .Values.devices.mthreads.enabled -}}

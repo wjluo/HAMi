@@ -366,6 +366,19 @@ func IsValidNodeSchedulerPolicy(policy string) bool {
 	}
 }
 
+// IsValidSuperpodSchedulerPolicy reports whether policy names a supported
+// superpod scheduling policy. It is a switch, not a scoring mode, so a single
+// value is meaningful and nothing is chained. The value is trimmed, matching
+// the other two policy validators.
+func IsValidSuperpodSchedulerPolicy(policy string) bool {
+	switch SchedulerPolicyName(strings.TrimSpace(policy)) {
+	case SuperpodSchedulerPolicyEnable, SuperpodSchedulerPolicyDisable:
+		return true
+	default:
+		return false
+	}
+}
+
 // GetGPUSchedulerPolicyByPod returns the GPU scheduling policy to apply to
 // task, preferring its GPUSchedulerPolicyAnnotationKey annotation over
 // defaultPolicy. An annotation that does not name a known policy is ignored
