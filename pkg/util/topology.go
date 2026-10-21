@@ -41,6 +41,14 @@ func GetNodeRackID(node *corev1.Node) int64 {
 	return topoID(node, TopoRackIDAnnotationKey)
 }
 
+// GetNodeServerID returns the server index inside the node's superpod, or
+// TopoIDInvalid when the node does not report one. The scheduler never places a
+// pod by it; it is the level a cross-check compares other nodes against,
+// because one server cannot belong to two superpods.
+func GetNodeServerID(node *corev1.Node) int64 {
+	return topoID(node, TopoServerIDAnnotationKey)
+}
+
 // GetInferServiceID returns the inference service the pod belongs to. An empty
 // result means the pod takes no part in topology convergence and is scheduled
 // exactly as before.

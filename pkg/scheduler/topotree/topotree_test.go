@@ -117,28 +117,32 @@ func TestReorderIsIdempotent(t *testing.T) {
 	}
 }
 
-func TestHasRackTierIsAutoDetected(t *testing.T) {
+// The rack tier is a property of the domains the workload converges into, not
+// of the candidate set of one round: a round whose candidates happen to carry no
+// rack id must not silently downgrade a three-tier cluster, and one annotated
+// node must not light strict semantics for a cluster with no topology.
+func TestOccupiedHasRackTier(t *testing.T) {
 	tests := []struct {
-		name       string
-		candidates []Entry
-		want       bool
+		name string
+		pods []ScheduledPod
+		want bool
 	}{
-		{"any valid rack enables the rack step", []Entry{
-			entry("a", 1, TopoIDInvalid, 1),
-			entry("b", 1, 4, 2),
-		}, true},
-		{"all invalid means two-tier", []Entry{
-			entry("a", 1, TopoIDInvalid, 1),
-			entry("b", 2, TopoIDInvalid, 2),
-		}, false},
-		{"no candidates", nil, false},
-		{"rack valid but superpod invalid is not a rack tier", []Entry{
-			entry("a", TopoIDInvalid, 4, 1),
-		}, false},
+		{"a pod on a rack-carrying node makes it three-tier",
+			[]ScheduledPod{{NodeID: "a", SuperPodID: 1, RackID: 4}}, true},
+		{"pods without a rack id leave it two-tier",
+			[]ScheduledPod{{NodeID: "a", SuperPodID: 1, RackID: TopoIDInvalid}}, false},
+		{"nothing placed", nil, false},
+		{
+			// A rack id alone is not a tier: CollectOccupied only records a
+			// rack under a usable superpod, so a broken annotation cannot
+			// invent a level the cluster does not have.
+			"rack valid but superpod unknown",
+			[]ScheduledPod{{NodeID: "a", SuperPodID: TopoIDInvalid, RackID: 4}}, false,
+		},
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
-			if got := HasRackTier(tc.candidates); got != tc.want {
+			if got := CollectOccupied(tc.pods).HasRackTier(); got != tc.want {
 				t.Errorf("HasRackTier() = %v, want %v", got, tc.want)
 			}
 		})
@@ -146,31 +150,30 @@ func TestHasRackTierIsAutoDetected(t *testing.T) {
 }
 
 func TestClassify(t *testing.T) {
-	occupied := CollectOccupied([]ScheduledPod{{NodeID: "n", SuperPodID: 1, RackID: 1}})
+	threeTier := CollectOccupied([]ScheduledPod{{NodeID: "n", SuperPodID: 1, RackID: 1}})
+	twoTier := CollectOccupied([]ScheduledPod{{NodeID: "n", SuperPodID: 1, RackID: TopoIDInvalid}})
 	tests := []struct {
 		name     string
+		occ      Occupied
 		cand     Entry
-		hasRack  bool
 		wantTier Tier
 	}{
-		{"same rack", entry("a", 1, 1, 0), true, TierSameRack},
-		{"same superpod other rack", entry("b", 1, 2, 0), true, TierSameSuperPod},
-		{"other superpod", entry("c", 2, 1, 0), true, TierOtherSuperPod},
-		{"no topology at all", entry("d", TopoIDInvalid, TopoIDInvalid, 0), true, TierNoTopology},
+		{"same rack", threeTier, entry("a", 1, 1, 0), TierSameRack},
+		{"same superpod other rack", threeTier, entry("b", 1, 2, 0), TierSameSuperPod},
+		{"other superpod", threeTier, entry("c", 2, 1, 0), TierOtherSuperPod},
+		{"no topology at all", threeTier, entry("d", TopoIDInvalid, TopoIDInvalid, 0), TierNoTopology},
 		{
 			// A node whose rack parsed but whose superpod did not cannot be
 			// trusted, otherwise a broken annotation could win the reorder.
 			"rack occupied but superpod unknown",
-			entry("e", TopoIDInvalid, 1, 0),
-			true,
-			TierNoTopology,
+			threeTier, entry("e", TopoIDInvalid, 1, 0), TierNoTopology,
 		},
-		{"two-tier ignores the rack id", entry("f", 1, 1, 0), false, TierSameSuperPod},
-		{"first pod: nothing occupied", entry("g", 5, 5, 0), true, TierOtherSuperPod},
+		{"two-tier ignores the rack id", twoTier, entry("f", 1, 1, 0), TierSameSuperPod},
+		{"first pod: nothing occupied", CollectOccupied(nil), entry("g", 5, 5, 0), TierOtherSuperPod},
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
-			if got := Classify(tc.cand, occupied, tc.hasRack); got != tc.wantTier {
+			if got := Classify(tc.cand, tc.occ); got != tc.wantTier {
 				t.Errorf("Classify(%s) = %v, want %v", tc.cand.NodeID, got, tc.wantTier)
 			}
 		})

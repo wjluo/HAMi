@@ -253,23 +253,29 @@ Returns a YAML list that can be used directly or converted to JSON via fromYaml 
 {{- $resources = append $resources (dict "name" .Values.devices.metax.resourceVCountName "ignoredByScheduler" true) -}}
 {{- $resources = append $resources (dict "name" .Values.devices.metax.resourceVCoreName "ignoredByScheduler" true) -}}
 {{- $resources = append $resources (dict "name" .Values.devices.metax.resourceVMemoryName "ignoredByScheduler" true) -}}
-{{/* Ascend resources: derive from the device config so a chip's count and
-     memory resource names always reach managedResources. Fall back to the
-     explicit customresources list for names that are not in configs. */}}
+{{/* Ascend resources. `devices.ascend.enabled` also drives --enable-ascend,
+     which is what makes the scheduler load the Ascend backend at all
+     (ascend.InitDevices returns nothing without it). managedResources follows
+     the same gate: listing Ascend names while the backend is off would make
+     kube-scheduler skip the capacity check for resources HAMi does not manage,
+     so a Pod asking for an NPU would land on a node with none instead of
+     failing with "Insufficient". When it is on, every name is derived from the
+     chip configs, so adding a chip to `configs` does not also require writing
+     it into `customresources`. */}}
+{{- if .Values.devices.ascend.enabled -}}
 {{- $ascendResources := list -}}
 {{- range .Values.devices.ascend.configs -}}
 {{- $ascendResources = append $ascendResources .resourceName -}}
 {{- if .resourceMemoryName -}}
 {{- $ascendResources = append $ascendResources .resourceMemoryName -}}
 {{- end -}}
-{{- end -}}
-{{- if hasKey .Values.devices.ascend "enabled" -}}
-{{- if .Values.devices.ascend.enabled -}}
-{{- $ascendResources = concat $ascendResources (.Values.devices.ascend.customresources | default (list)) -}}
+{{- if .resourceCoreName -}}
+{{- $ascendResources = append $ascendResources .resourceCoreName -}}
 {{- end -}}
 {{- end -}}
 {{- range (concat $ascendResources (.Values.devices.ascend.customresources | default (list)) | uniq) -}}
 {{- $resources = append $resources (dict "name" . "ignoredByScheduler" true) -}}
+{{- end -}}
 {{- end -}}
 {{/* Mthreads resources */}}
 {{- if .Values.devices.mthreads.enabled -}}

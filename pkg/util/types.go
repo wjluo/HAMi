@@ -92,6 +92,10 @@ const (
 	NodeSchedulerPolicyAnnotationKey = "hami.io/node-scheduler-policy"
 	// GPUSchedulerPolicyAnnotationKey is user set Pod annotation to change this default GPU policy.
 	GPUSchedulerPolicyAnnotationKey = "hami.io/gpu-scheduler-policy"
+	// SuperpodSchedulerPolicyAnnotationKey is user set Pod annotation to change
+	// the cluster's superpod domain policy for this Pod alone. See
+	// SuperpodSchedulerPolicyEnable and SuperpodSchedulerPolicyDisable.
+	SuperpodSchedulerPolicyAnnotationKey = "hami.io/superpod-scheduler-policy"
 	// DeviceScoringWeightsAnnotationKey configures per-Pod slot, core, and memory scoring weights.
 	DeviceScoringWeightsAnnotationKey = "hami.io/device-scoring-weights"
 	// NumaAlignmentAnnotationKey is a per-Pod annotation selecting how HAMi

@@ -114,6 +114,43 @@ func TestGetNodeRackID(t *testing.T) {
 	}
 }
 
+// The server level is only read to cross-check one node against another, so a
+// missing or unusable value has to read as "says nothing" rather than as a
+// server every unannotated node shares.
+func TestGetNodeServerID(t *testing.T) {
+	tests := []struct {
+		name       string
+		annos      map[string]string
+		wantServer int64
+	}{
+		{"reported server index", map[string]string{
+			TopoSuperPodIDAnnotationKey: "3",
+			TopoServerIDAnnotationKey:   "11",
+		}, 11},
+		{"absent level on a chip that stops above the server", map[string]string{
+			TopoSuperPodIDAnnotationKey: "3",
+		}, TopoIDInvalid},
+		{"nil node yields invalid", nil, TopoIDInvalid},
+		{"negative driver sentinel yields invalid", map[string]string{
+			TopoServerIDAnnotationKey: "-2",
+		}, TopoIDInvalid},
+		{"zero is a real index, not a missing one", map[string]string{
+			TopoServerIDAnnotationKey: "0",
+		}, 0},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			node := nodeWithAnnotations(tc.annos)
+			if tc.annos == nil {
+				node = nil
+			}
+			if got := GetNodeServerID(node); got != tc.wantServer {
+				t.Errorf("GetNodeServerID() = %d, want %d", got, tc.wantServer)
+			}
+		})
+	}
+}
+
 func TestGetInferServiceID(t *testing.T) {
 	tests := []struct {
 		name   string

@@ -32,12 +32,33 @@ import (
 	"github.com/Project-HAMi/HAMi/pkg/util"
 )
 
-// superpodPolicyEnabled reports whether the superpod scheduling policy is on.
-// The flag is a free-form string a non-chart deployment can set to anything,
-// so an unrecognized value keeps the default rather than silently turning
-// convergence off, in the same spirit as the other policy readers.
-func superpodPolicyEnabled() bool {
-	value := config.SuperpodSchedulerPolicy
+// resolveSuperpodSchedulerPolicy returns the superpod domain policy to apply to
+// pod, preferring its SuperpodSchedulerPolicyAnnotationKey annotation over
+// config.SuperpodSchedulerPolicy.
+//
+// The per-Pod escape valve exists because the cluster default is strict: one
+// wrong node annotation can leave every Pod of a service pending, and without
+// this the only remedy is to turn convergence off for the whole cluster. An
+// annotation that does not name a supported policy is ignored with a warning,
+// so a typo cannot silently drop a workload that was meant to converge.
+func resolveSuperpodSchedulerPolicy(pod *corev1.Pod) string {
+	if value, ok := pod.GetAnnotations()[util.SuperpodSchedulerPolicyAnnotationKey]; ok {
+		if util.IsValidSuperpodSchedulerPolicy(value) {
+			return strings.TrimSpace(value)
+		}
+		klog.Warningf("ignoring unrecognized %s=%q on pod %s/%s, using the configured policy %q",
+			util.SuperpodSchedulerPolicyAnnotationKey, value, pod.Namespace, pod.Name,
+			config.SuperpodSchedulerPolicy)
+	}
+	return config.SuperpodSchedulerPolicy
+}
+
+// superpodPolicyEnabled reports whether the superpod scheduling policy is on for
+// pod. The flag is a free-form string a non-chart deployment can set to
+// anything, so an unrecognized value keeps the default rather than silently
+// turning convergence off, in the same spirit as the other policy readers.
+func superpodPolicyEnabled(pod *corev1.Pod) bool {
+	value := resolveSuperpodSchedulerPolicy(pod)
 	if !util.IsValidSuperpodSchedulerPolicy(value) {
 		klog.Warningf("unrecognized superpod scheduler policy %q, using %q",
 			value, util.SuperpodSchedulerPolicyEnable.String())
@@ -46,55 +67,171 @@ func superpodPolicyEnabled() bool {
 	return util.SchedulerPolicyName(strings.TrimSpace(value)) == util.SuperpodSchedulerPolicyEnable
 }
 
+// superpodOutcome is what the policy decided, kept apart from the nodes it
+// removed so the decision can be reported where a user will actually look at it.
+//
+// HAMi's scheduler has no /score endpoint, so the tier ranking is invisible in
+// kube-scheduler configuration: without this, "why did my spread pod land on the
+// busy node" and "why is this service Pending" are only answerable from V(2)
+// logs. The zero value means the policy changed nothing.
+type superpodOutcome struct {
+	// Policy is the node packing policy that produced the incoming order, kept
+	// so an override can name what it overrode.
+	Policy string
+	// InferServiceID is the service the pod names, empty for an unlabeled pod.
+	InferServiceID string
+	// Domains lists the superpods the workload converges into.
+	Domains string
+	// RackTier reports whether the convergence is at rack granularity.
+	RackTier bool
+	// SelectedNodeID is the candidate left at the head of the list.
+	SelectedNodeID string
+	SuperPodID     int64
+	RackID         int64
+	// Tier names how close the winner sits to the workload's domain.
+	Tier string
+	// Gated counts the candidates removed for sitting in another superpod.
+	Gated int
+	// ScorePreferred is the candidate the packing policy had put first before
+	// topology moved it, and OverrodeScore says whether that happened.
+	ScorePreferred string
+	OverrodeScore  bool
+	// Conflict describes a topology report that contradicts itself, empty when
+	// the annotations agree.
+	Conflict string
+}
+
+// EventSuffix renders the decision for a Pod Event, which is what
+// kubectl describe pod shows. An empty string means there is nothing to add.
+func (o superpodOutcome) EventSuffix() string {
+	if o.SelectedNodeID == "" && o.Gated == 0 && o.Conflict == "" {
+		return ""
+	}
+	var msg string
+	if o.SelectedNodeID == "" {
+		// Nothing survived the gate, so the only useful sentence is the one
+		// about the domain the workload is holding to.
+		msg = fmt.Sprintf("; superpod policy left no candidate: %s, %d node(s) gated out as foreign",
+			o.domainsClause(), o.Gated)
+	} else {
+		msg = fmt.Sprintf("; superpod placement: node=%s tier=%s superpod=%d", o.SelectedNodeID, o.Tier, o.SuperPodID)
+		if o.RackTier {
+			msg += fmt.Sprintf(" rack=%d", o.RackID)
+		}
+		msg += " " + o.domainsClause()
+		if o.Gated > 0 {
+			msg += fmt.Sprintf(", %d node(s) gated out as foreign", o.Gated)
+		}
+		if o.OverrodeScore {
+			msg += fmt.Sprintf(", topology outranked the %s score order (score preferred %s)", o.Policy, o.ScorePreferred)
+		}
+	}
+	if o.Conflict != "" {
+		msg += "; WARNING: conflicting topology annotations: " + o.Conflict
+	}
+	return msg
+}
+
+// domainsClause names the superpods the workload converges into. An empty set is
+// not a domain, so the first pod of a service reads "has no placement yet"
+// rather than claiming it converged into nothing.
+func (o superpodOutcome) domainsClause() string {
+	occupied := o.Domains != "" && o.Domains != "none"
+	if o.InferServiceID != "" {
+		if !occupied {
+			return fmt.Sprintf("service=%s has no placement in any superpod yet", o.InferServiceID)
+		}
+		return fmt.Sprintf("service=%s converged into superpod(s) [%s]", o.InferServiceID, o.Domains)
+	}
+	if !occupied {
+		return "no superpod is occupied yet"
+	}
+	return fmt.Sprintf("preferring occupied superpod(s) [%s]", o.Domains)
+}
+
 // applySuperpodPolicy holds a converged workload inside its superpod domain.
 // It takes the candidate list the existing scoring already sorted, drops the
 // nodes belonging to another superpod, and re-orders the survivors so the most
 // topology-adjacent one sits last, which is where HAMi reads the winner.
 //
 // The returned map is the set of removed nodes keyed by the reason to report;
-// an empty result means the candidate list still holds every node. A pod is
-// only ever gated when it names the inference service it belongs to: without
-// that label there is no statement of which pods must share a domain, so the
-// policy orders such a pod towards the superpods already in use instead of
-// cutting the rest away. Clusters whose nodes carry no topology annotations,
-// and a workload nothing has placed yet, are left exactly as they were.
-func (s *Scheduler) applySuperpodPolicy(scores *policy.NodeScoreList, pod *corev1.Pod) map[string]string {
-	if scores == nil || pod == nil || len(scores.NodeList) == 0 || !superpodPolicyEnabled() {
-		return nil
+// an empty result means the candidate list still holds every node. The outcome
+// describes the decision itself and is returned even when nothing was dropped,
+// because a placement that was only re-ordered is the case that needs an
+// explanation most. A pod is only ever gated when it names the inference
+// service it belongs to: without that label there is no statement of which
+// pods must share a domain, so the policy orders such a pod towards the
+// superpods already in use instead of cutting the rest away. Clusters whose
+// nodes carry no topology annotations, and a workload nothing has placed yet,
+// are left exactly as they were.
+func (s *Scheduler) applySuperpodPolicy(scores *policy.NodeScoreList, pod *corev1.Pod) (map[string]string, superpodOutcome) {
+	if scores == nil || pod == nil || len(scores.NodeList) == 0 || !superpodPolicyEnabled(pod) {
+		return nil, superpodOutcome{}
 	}
+	outcome := superpodOutcome{Policy: scores.Policy}
 
 	entries := make([]topotree.Entry, 0, len(scores.NodeList))
+	reports := make([]serverReport, 0, len(scores.NodeList))
 	byID := make(map[string]*policy.NodeScore, len(scores.NodeList))
-	topologyKnown := false
+	topologyReported := false
 	for _, ns := range scores.NodeList {
-		superpodID := util.GetNodeSuperPodID(ns.Node)
+		// Read the live informer copy when there is one; the score's Node is a
+		// snapshot taken when the devices were registered and can predate the
+		// topology annotations entirely.
+		node := ns.Node
+		if s.nodeLister != nil {
+			if fresh, err := s.nodeLister.Get(ns.NodeID); err == nil && fresh != nil {
+				node = fresh
+			}
+		}
+		superpodID := util.GetNodeSuperPodID(node)
+		rackID := util.GetNodeRackID(node)
 		if superpodID >= 0 {
-			topologyKnown = true
+			topologyReported = true
 		}
 		entries = append(entries, topotree.Entry{
 			NodeID:     ns.NodeID,
 			SuperPodID: superpodID,
-			RackID:     util.GetNodeRackID(ns.Node),
+			RackID:     rackID,
 			Score:      float64(ns.Score),
+		})
+		reports = append(reports, serverReport{
+			nodeID:     ns.NodeID,
+			superpodID: superpodID,
+			serverID:   util.GetNodeServerID(node),
 		})
 		byID[ns.NodeID] = ns
 	}
-	if !topologyKnown {
+	if !topologyReported {
+		// A diagnostic, not a switch. Whether the policy has anything to hold
+		// the workload to is decided by the occupancy below: one annotated node
+		// must not switch strict gating on for a cluster whose topology nobody
+		// reports, and one round of candidates that all happen to be
+		// unannotated must not switch it off for a cluster that has it.
 		s.missingTopologyWarn.Do(func() {
 			klog.Warningf("superpod scheduling policy is %q but no candidate node carries a usable hami.io/superpodid annotation; "+
 				"check the device plugin topology reporting or the node annotations before relying on convergence",
 				config.SuperpodSchedulerPolicy)
 		})
-		return nil
+	}
+	outcome.Conflict = contradictoryServers(reports)
+	if outcome.Conflict != "" {
+		s.conflictingTopologyWarn.Do(func() {
+			klog.Warningf("node topology annotations contradict each other: %s", outcome.Conflict)
+		})
 	}
 
 	inferServiceID := util.GetInferServiceID(pod)
+	outcome.InferServiceID = inferServiceID
 	var occupied topotree.Occupied
 	if inferServiceID != "" {
 		occupied = s.collectInferServiceOccupancy(inferServiceID, pod.UID)
 	} else {
 		occupied = s.collectClusterOccupancy(pod.UID)
 	}
+	outcome.Domains = domainsString(occupied)
+	hasRack := occupied.HasRackTier()
+	outcome.RackTier = hasRack
 
 	var dropped []topotree.Entry
 	if inferServiceID != "" {
@@ -110,35 +247,102 @@ func (s *Scheduler) applySuperpodPolicy(scores *policy.NodeScoreList, pod *corev
 		}
 	}
 
+	scorePreferred := selectedForLog(scores.NodeList)
 	ordered := topotree.Reorder(entries, occupied)
 	rebuilt := make([]*policy.NodeScore, 0, len(ordered))
 	tiers := make([]string, 0, len(ordered))
-	hasRack := topotree.HasRackTier(entries)
 	for _, entry := range ordered {
 		rebuilt = append(rebuilt, byID[entry.NodeID])
-		tiers = append(tiers, entry.NodeID+":"+tierName(topotree.Classify(entry, occupied, hasRack)))
+		tiers = append(tiers, entry.NodeID+":"+tierName(topotree.Classify(entry, occupied)))
 	}
 	scores.NodeList = rebuilt
+
+	outcome.SelectedNodeID = selectedForLog(rebuilt)
+	outcome.Gated = len(dropped)
+	if outcome.SelectedNodeID != "" {
+		for _, entry := range ordered {
+			if entry.NodeID != outcome.SelectedNodeID {
+				continue
+			}
+			outcome.SuperPodID = entry.SuperPodID
+			outcome.RackID = entry.RackID
+			outcome.Tier = tierName(topotree.Classify(entry, occupied))
+			break
+		}
+	}
+	// The topology tier outranks the packing score by design. Recording the
+	// candidate that would have won without it is what makes a surprising
+	// placement answerable.
+	outcome.ScorePreferred = scorePreferred
+	outcome.OverrodeScore = scorePreferred != "" && outcome.SelectedNodeID != "" && scorePreferred != outcome.SelectedNodeID
 
 	klog.V(2).InfoS("Applied superpod scheduling policy",
 		"pod", klog.KObj(pod),
 		"inferServiceID", inferServiceID,
 		"rackTier", hasRack,
-		"occupied", domainsString(occupied),
+		"occupied", outcome.Domains,
 		"order", tiers,
 		"dropped", len(dropped),
-		"selected", selectedForLog(rebuilt))
+		"selected", outcome.SelectedNodeID,
+		"overrodeScore", outcome.OverrodeScore,
+		"conflict", outcome.Conflict)
 
 	if len(dropped) == 0 {
-		return nil
+		return nil, outcome
 	}
 	failed := make(map[string]string, len(dropped))
 	for _, entry := range dropped {
 		failed[entry.NodeID] = fmt.Sprintf(
 			"node %s is in superpod %d, outside the superpod domain this workload converges into (%s)",
-			entry.NodeID, entry.SuperPodID, domainsString(occupied))
+			entry.NodeID, entry.SuperPodID, outcome.Domains)
 	}
-	return failed
+	return failed, outcome
+}
+
+// serverReport is one candidate's view of where its machine sits, for the
+// cross-check that the annotations of the candidate set agree with each other.
+type serverReport struct {
+	nodeID     string
+	superpodID int64
+	serverID   int64
+}
+
+// contradictoryServers names candidate nodes that put the same server in more
+// than one superpod. A machine lives in one superpod, so two nodes disagreeing
+// about one server index mean at least one annotation is stale or was set by
+// hand. The scheduler cannot tell which is right, and must not guess by
+// silently picking one domain, but naming the pair turns "why is this service
+// stuck in superpod 4" into a one-line answer.
+//
+// Nodes missing either level are skipped: an absent server id says nothing, and
+// two unannotated nodes are not a contradiction.
+func contradictoryServers(reports []serverReport) string {
+	byServer := make(map[int64][]serverReport)
+	for _, r := range reports {
+		if r.serverID < 0 || r.superpodID < 0 {
+			continue
+		}
+		byServer[r.serverID] = append(byServer[r.serverID], r)
+	}
+	var out []string
+	for _, serverID := range slices.Sorted(maps.Keys(byServer)) {
+		domains := make(map[int64][]string)
+		for _, r := range byServer[serverID] {
+			domains[r.superpodID] = append(domains[r.superpodID], r.nodeID)
+		}
+		if len(domains) < 2 {
+			continue
+		}
+		parts := make([]string, 0, len(domains))
+		for _, superpodID := range slices.Sorted(maps.Keys(domains)) {
+			nodes := domains[superpodID]
+			slices.Sort(nodes)
+			parts = append(parts, fmt.Sprintf("node(s) %s say superpod %d",
+				strings.Join(nodes, ","), superpodID))
+		}
+		out = append(out, fmt.Sprintf("serverid %d is %s", serverID, strings.Join(parts, " but ")))
+	}
+	return strings.Join(out, "; ")
 }
 
 // mergeFailedNodes reports why the superpod policy removed candidates
@@ -233,20 +437,27 @@ func (s *Scheduler) collectClusterOccupancy(selfUID k8stypes.UID) topotree.Occup
 	return topotree.CollectOccupied(scheduled)
 }
 
-// topologyNode resolves a node's topology metadata, preferring the scheduler
-// cache and falling back to the node lister when the node is not registered
-// (for example right after its annotations were written).
+// topologyNode resolves a node's topology metadata.
+//
+// The informer is the primary source on purpose: the scheduler keeps a deep
+// copy of the Node inside its device cache and only replaces it when the device
+// list changes, so a node whose annotations arrived (or moved) after its
+// devices were registered would stay invisible in that cache indefinitely. The
+// informer store is updated by every watch event, so it always holds the
+// current annotations. The cached copy is the fallback for callers that have no
+// node informer wired, and an empty string is answered with nil so a pod that
+// was never bound contributes no occupancy.
 func (s *Scheduler) topologyNode(nodeID string) *corev1.Node {
 	if nodeID == "" {
 		return nil
 	}
-	if info, err := s.GetNode(nodeID); err == nil && info != nil && info.Node != nil {
-		return info.Node
-	}
 	if s.nodeLister != nil {
-		if node, err := s.nodeLister.Get(nodeID); err == nil {
+		if node, err := s.nodeLister.Get(nodeID); err == nil && node != nil {
 			return node
 		}
+	}
+	if info, err := s.GetNode(nodeID); err == nil && info != nil {
+		return info.Node
 	}
 	return nil
 }

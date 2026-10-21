@@ -87,14 +87,19 @@ type Scheduler struct {
 	// info level, so a re-registration logs at V(5) instead. It is pruned when
 	// a node is deleted, both to keep it bounded under node churn and so a node
 	// that returns under the same name is logged as newly added again.
-	printedLog    map[string]bool
+	printedLog map[string]bool
 	// missingTopologyWarn latches the one-time warning that the superpod
 	// policy is enabled while no candidate carries a usable topology
 	// annotation, so a misconfigured cluster is noticed without spamming
 	// every Filter round.
 	missingTopologyWarn sync.Once
-	eventRecorder record.EventRecorder
-	started       uint32 // 0 = false, 1 = true
+	// conflictingTopologyWarn latches the one-time warning that the candidate
+	// nodes describe the same server as sitting in more than one superpod. The
+	// contradiction itself never gates a placement, so the scheduler only says
+	// the alarming part once and leaves the detail to the Pod event.
+	conflictingTopologyWarn sync.Once
+	eventRecorder           record.EventRecorder
+	started                 uint32 // 0 = false, 1 = true
 
 	lock   sync.RWMutex
 	synced atomic.Bool
@@ -1424,13 +1429,16 @@ func (s *Scheduler) Filter(args extenderv1.ExtenderArgs) (*extenderv1.ExtenderFi
 	klog.V(4).Infoln("nodeScores_len=", len((*nodeScores).NodeList))
 	sort.Sort(nodeScores)
 	// Must run before the last element is read: the winner is NodeList[len-1].
-	failedNodes = mergeFailedNodes(failedNodes, s.applySuperpodPolicy(nodeScores, pod))
+	dropped, outcome := s.applySuperpodPolicy(nodeScores, pod)
+	failedNodes = mergeFailedNodes(failedNodes, dropped)
 	if len((*nodeScores).NodeList) == 0 {
 		klog.InfoS("Superpod policy left no candidate node; every node that fits devices lies outside the workload's superpod domain",
 			"pod", klog.KObj(pod),
-			"failedNodes", failedNodes)
+			"failedNodes", failedNodes,
+			"placement", outcome.EventSuffix())
 		s.GetAllocationMetrics().ObserveAllocationFailure("filter", deviceTypeForRequests(resourceReqs), metrics.FailureReasonNoFit)
-		s.recordScheduleFilterResultEvent(pod, EventReasonFilteringFailed, "", fmt.Errorf("no available node in the required superpod domain, %d nodes do not meet", len(*args.NodeNames)))
+		s.recordScheduleFilterResultEvent(pod, EventReasonFilteringFailed, "",
+			fmt.Errorf("no available node in the required superpod domain, %d nodes do not meet%s", len(*args.NodeNames), outcome.EventSuffix()))
 		return &extenderv1.ExtenderFilterResult{
 			FailedNodes: failedNodes,
 		}, nil
@@ -1440,7 +1448,10 @@ func (s *Scheduler) Filter(args extenderv1.ExtenderArgs) (*extenderv1.ExtenderFi
 		"podNamespace", pod.Namespace,
 		"podName", pod.Name,
 		"nodeID", m.NodeID,
-		"devices", m.Devices)
+		"devices", m.Devices,
+		// At info level on purpose: the extender has no /score endpoint, so
+		// this process's log is the other place a topology decision shows up.
+		"superpodPlacement", strings.TrimPrefix(outcome.EventSuffix(), "; "))
 	annotations := make(map[string]string)
 	annotations[util.AssignedNodeAnnotations] = m.NodeID
 	annotations[util.AssignedTimeAnnotations] = strconv.FormatInt(time.Now().Unix(), 10)
@@ -1469,7 +1480,7 @@ func (s *Scheduler) Filter(args extenderv1.ExtenderArgs) (*extenderv1.ExtenderFi
 	}
 
 	s.GetAllocationMetrics().ObserveAllocation("filter", deviceTypeForRequests(resourceReqs))
-	successMsg := genSuccessMsg(len(*args.NodeNames), m.NodeID, nodeScores.NodeList)
+	successMsg := genSuccessMsg(len(*args.NodeNames), m.NodeID, nodeScores.NodeList) + outcome.EventSuffix()
 	s.recordScheduleFilterResultEvent(pod, EventReasonFilteringSucceed, successMsg, nil)
 	res := extenderv1.ExtenderFilterResult{NodeNames: &[]string{m.NodeID}}
 	return &res, nil
@@ -1500,10 +1511,12 @@ func (s *Scheduler) filterSimulation(args extenderv1.ExtenderArgs, resourceReqs 
 		}, nil
 	}
 	sort.Sort(nodeScores)
-	failedNodes = mergeFailedNodes(failedNodes, s.applySuperpodPolicy(nodeScores, args.Pod))
+	dropped, outcome := s.applySuperpodPolicy(nodeScores, args.Pod)
+	failedNodes = mergeFailedNodes(failedNodes, dropped)
 	if len(nodeScores.NodeList) == 0 {
 		klog.V(3).InfoS("Superpod policy left no candidate in simulation",
-			"pod", klog.KObj(args.Pod))
+			"pod", klog.KObj(args.Pod),
+			"placement", outcome.EventSuffix())
 		return &extenderv1.ExtenderFilterResult{
 			FailedNodes: failedNodes,
 		}, nil
@@ -1519,7 +1532,8 @@ func (s *Scheduler) filterSimulation(args extenderv1.ExtenderArgs, resourceReqs 
 	klog.V(2).InfoS("Simulation filter selected best node",
 		"pod", klog.KObj(args.Pod),
 		"selectedNode", bestNodeID,
-		"filteredNodesLen", len(filteredNodes))
+		"filteredNodesLen", len(filteredNodes),
+		"superpodPlacement", strings.TrimPrefix(outcome.EventSuffix(), "; "))
 	return &extenderv1.ExtenderFilterResult{
 		Nodes: &corev1.NodeList{
 			Items: filteredNodes,

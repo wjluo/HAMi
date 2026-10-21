@@ -93,31 +93,29 @@ func CollectOccupied(pods []ScheduledPod) Occupied {
 	return occ
 }
 
-// HasRackTier reports whether the cluster exposes a rack tier, inferred from
-// the candidates themselves so no per-chip configuration is needed. A rack id
-// is only meaningful when the superpod id is valid too.
+// HasRackTier reports whether the domains this workload converges into have a
+// rack between the superpod and the server. It is the single source of that
+// decision: an ordering and a diagnostic computed from two different views can
+// disagree about which tier a node is in, and a candidate set that happens to
+// hold no rack node for one round would otherwise downgrade a three-tier
+// cluster to a two-tier one.
 //
-// Reorder does not use this function: it decides the rack tier from the
-// occupied domains (occ.RackKeys), which is stable across scheduling rounds,
-// whereas a candidate set that happens to lack rack-carrying nodes would make
-// this function flip a three-tier cluster to two-tier for a single round.
-// It is kept exported for callers that explicitly want the candidate-based
-// view (tests, diagnostics).
-func HasRackTier(candidates []Entry) bool {
-	for _, cand := range candidates {
-		if cand.SuperPodID >= 0 && cand.RackID >= 0 {
-			return true
-		}
-	}
-	return false
+// RackKeys can only be filled by a pod on a node with a usable superpod id, so
+// a rack id alone - the driver sentinel for "unknown" leaking through - never
+// creates a tier.
+func (o Occupied) HasRackTier() bool {
+	return len(o.RackKeys) > 0
 }
 
 // Classify places one candidate into a tier. On a two-tier chip the rack
-// dimension is skipped entirely, leaving same-superpod as the best outcome.
-func Classify(cand Entry, occ Occupied, hasRack bool) Tier {
+// dimension is skipped entirely, leaving same-superpod as the best outcome. The
+// rack tier comes from the occupied domains, so a caller cannot hand Classify a
+// view that disagrees with Reorder.
+func Classify(cand Entry, occ Occupied) Tier {
 	if cand.SuperPodID < 0 {
 		return TierNoTopology
 	}
+	hasRack := occ.HasRackTier()
 	if hasRack && cand.RackID >= 0 && occ.RackKeys[RackKey(cand.SuperPodID, cand.RackID)] {
 		return TierSameRack
 	}
@@ -131,18 +129,11 @@ func Classify(cand Entry, occ Occupied, hasRack bool) Tier {
 // picks the last element, matching HAMi's convention that the best node sits at
 // the end of a sorted score list (see scheduler.go). Within a tier the incoming
 // order is preserved, so the scores computed by the existing logic still decide.
-//
-// The rack tier is taken from the occupied domains rather than the candidate
-// set: once one pod of the service has landed on a rack-carrying node, the
-// whole cluster is treated as three-tier for this service, and no later
-// candidate set that lacks a rack node can silently downgrade the convergence
-// granularity for a round.
 func Reorder(candidates []Entry, occ Occupied) []Entry {
-	hasRack := len(occ.RackKeys) > 0
 	ordered := make([]Entry, len(candidates))
 	copy(ordered, candidates)
 	sort.SliceStable(ordered, func(i, j int) bool {
-		return Classify(ordered[i], occ, hasRack) < Classify(ordered[j], occ, hasRack)
+		return Classify(ordered[i], occ) < Classify(ordered[j], occ)
 	})
 	return ordered
 }

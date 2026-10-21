@@ -74,7 +74,9 @@ scheduler:
     # -- Superpod domain policy: `enable` keeps a workload inside the superpod it converges into, and a
     # full domain leaves the Pod pending instead of placing it in another superpod. `disable` leaves node
     # choice to the two policies above. Nodes without `hami.io/superpodid` annotations are never excluded,
-    # so a cluster that reports no topology is unaffected. It is passed as the `--superpod-scheduler-policy` flag.
+    # so a cluster that reports no topology is unaffected. The `hami.io/superpod-scheduler-policy` Pod
+    # annotation overrides it for one workload, in both directions. It is passed as the
+    # `--superpod-scheduler-policy` flag.
     superpodSchedulerPolicy: enable
   # -- Address the scheduler serves Prometheus metrics on, as `[host]:port`. The chart also takes the port from it for the `metrics` container port.
   metricsBindAddress: ":9395"

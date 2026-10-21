@@ -18,6 +18,7 @@ package scheduler
 
 import (
 	"context"
+	"strings"
 	"testing"
 	"time"
 
@@ -28,6 +29,7 @@ import (
 	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/client-go/informers"
 	"k8s.io/client-go/kubernetes/fake"
+	"k8s.io/client-go/tools/record"
 	extenderv1 "k8s.io/kube-scheduler/extender/v1"
 
 	"github.com/Project-HAMi/HAMi/pkg/device"
@@ -295,5 +297,64 @@ func TestFilterSimulationWiringMatchesRealFilter(t *testing.T) {
 		require.NotNil(t, res.Nodes)
 		require.Len(t, res.Nodes.Items, 1)
 		require.Equal(t, "scale-in-sp", res.Nodes.Items[0].Name)
+	}
+}
+
+// The extender has no /score endpoint, so a Pod event is the only place a
+// topology decision reaches someone who is not reading scheduler logs at V(2).
+// Both outcomes have to be explainable from `kubectl describe pod`: which
+// domain a placement went into, and which domain a pending pod is waiting for.
+func TestFilterEventsReportTheSuperpodDecision(t *testing.T) {
+	t.Run("placement names the domain it landed in", func(t *testing.T) {
+		s := seedSuperpodCluster(t, "svc-a")
+		recorder := record.NewFakeRecorder(10)
+		s.eventRecorder = recorder
+
+		pending := topoGPUPod("decode-0", "decode-0-uid", "svc-a", 500, 10)
+		_, err := client.KubeClient.CoreV1().Pods(pending.Namespace).Create(context.Background(), pending, metav1.CreateOptions{})
+		require.NoError(t, err)
+
+		_, err = s.Filter(extenderv1.ExtenderArgs{Pod: pending, NodeNames: &[]string{"node-sp1", "node-sp2"}})
+		require.NoError(t, err)
+
+		events := recordedEvents(recorder)
+		require.Contains(t, events, EventReasonFilteringSucceed)
+		for _, want := range []string{"node=node-sp1", "superpod=1", "svc-a", "gated out as foreign"} {
+			require.Contains(t, events, want, "event %q must mention %q", events, want)
+		}
+	})
+
+	t.Run("no fit names the domain the pod waits for", func(t *testing.T) {
+		s := seedSplitCluster(t, "svc-a")
+		recorder := record.NewFakeRecorder(10)
+		s.eventRecorder = recorder
+
+		pending := topoGPUPod("decode-0", "decode-0-uid", "svc-a", 2000, 10)
+		_, err := client.KubeClient.CoreV1().Pods(pending.Namespace).Create(context.Background(), pending, metav1.CreateOptions{})
+		require.NoError(t, err)
+
+		_, err = s.Filter(extenderv1.ExtenderArgs{Pod: pending, NodeNames: &[]string{"node-sp1", "node-sp2"}})
+		require.NoError(t, err)
+
+		events := recordedEvents(recorder)
+		require.Contains(t, events, EventReasonFilteringFailed)
+		require.Contains(t, events, "converged into superpod(s) [1]",
+			"event %q must name the domain the pod is held to", events)
+	})
+}
+
+// recordedEvents joins everything the scheduler reported so far, so an
+// assertion can say "some event mentions this" without depending on how many
+// events one Filter round produces.
+func recordedEvents(recorder *record.FakeRecorder) string {
+	var out strings.Builder
+	for {
+		select {
+		case event := <-recorder.Events:
+			out.WriteString(event)
+			out.WriteString("\n")
+		default:
+			return out.String()
+		}
 	}
 }

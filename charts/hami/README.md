@@ -344,6 +344,13 @@ lists add extra resource names and default to `[]`. Standard resources are
 always included when the vendor is enabled, and duplicate names within each
 vendor are removed.
 
+Ascend follows the same rule: its resource names are registered only when
+`devices.ascend.enabled` is `true`, because that value also drives the
+scheduler's `--enable-ascend`. Listing Ascend resources while the backend is
+off would make kube-scheduler skip the capacity check for resources the
+extender does not manage. When it is on, every name in `devices.ascend.configs`
+is derived automatically, so `customresources` only needs the extra names.
+
 For other vendors whose extender resources use `customresources`, update those
 lists when changing resource names or chip definitions.
 
@@ -483,7 +490,7 @@ More values will be added in follow-up PRs.
 | scheduler.certManager.enabled | bool | `false` | Use cert-manager for the admission webhook certificate. The chart creates a self-signed Issuer and a Certificate for `<scheduler Service>.<namespace>.svc` stored in Secret `<fullname>-scheduler-tls`, and annotates the webhook so cert-manager injects its CA. Requires cert-manager in the cluster and `admissionWebhook.enabled`. Takes precedence over `patch`. With both `certManager.enabled` and `patch.enabled` false, create that Secret with `tls.crt` and `tls.key` and set the webhook CA yourself. |
 | scheduler.defaultSchedulerPolicy.gpuSchedulerPolicy | string | `"spread"` | Default device scoring policy within a node: `binpack`, `spread`, or `topology-aware`. `topology-aware` also makes the NVIDIA device plugin report GPU topology scores. The `hami.io/gpu-scheduler-policy` Pod annotation overrides it. |
 | scheduler.defaultSchedulerPolicy.nodeSchedulerPolicy | string | `"binpack"` | Default node scoring policy: `binpack` fills busy nodes first, `spread` prefers idle ones. The `hami.io/node-scheduler-policy` Pod annotation overrides it. |
-| scheduler.defaultSchedulerPolicy.superpodSchedulerPolicy | string | `"enable"` | Superpod domain policy: `enable` keeps a workload inside the superpod it converges into, and a full domain leaves the Pod pending instead of placing it in another superpod. `disable` leaves node choice to the two policies above. Nodes without `hami.io/superpodid` annotations are never excluded, so a cluster that reports no topology is unaffected. It is passed as the `--superpod-scheduler-policy` flag. |
+| scheduler.defaultSchedulerPolicy.superpodSchedulerPolicy | string | `"enable"` | Superpod domain policy: `enable` keeps a workload inside the superpod it converges into, and a full domain leaves the Pod pending instead of placing it in another superpod. `disable` leaves node choice to the two policies above. Nodes without `hami.io/superpodid` annotations are never excluded, so a cluster that reports no topology is unaffected. The `hami.io/superpod-scheduler-policy` Pod annotation overrides it for one workload, in both directions. It is passed as the `--superpod-scheduler-policy` flag. |
 | scheduler.extender.extraArgs | list | `["--debug","-v=4"]` | Extra command-line flags for the scheduler extender, appended after the flags the chart generates, such as `--profiling` to serve pprof on `scheduler.profilingBindAddress`. |
 | scheduler.extender.image.pullPolicy | string | `"IfNotPresent"` | Pull policy of the scheduler extender image. |
 | scheduler.extender.image.pullSecrets | list | `[]` | Names of existing image pull Secrets for the scheduler Pod, added after `global.imagePullSecrets`. |

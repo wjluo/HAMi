@@ -1,0 +1,32 @@
+# Superpod build: takes the image the cluster already runs and replaces only the
+# scheduler binary, because the superpod changes are all in pkg/scheduler and
+# pkg/util. Rebuilding the whole HAMi image would also relink libvgpu against a
+# CUDA toolchain nothing here validates, so a Pod that is not about scheduling
+# would change as a side effect of a scheduling fix.
+#
+# The base is pinned by digest: this tag is the team's own build, and a tag can
+# be re-pointed under us while the scheduler is the component deciding where
+# every accelerator in the cluster is placed.
+FROM registry.cic.cmbchina.cn/ks-addon/hami/hami:v2.10.0-superpod.1@sha256:d106c05bafaed4484050bc3c53fa9b1a4eee28b56cdc7c30f7c41caad0c35c73 AS base
+
+# The same toolchain pin the upstream build uses (version.mk), so the binary in
+# this image is compiled by the compiler the upstream image is compiled by.
+FROM golang:1.27.2-bookworm@sha256:5cf287a799e6b94384bad13d16b14904c531f51ba65792237e122ce42b392f61 AS build
+ARG VERSION
+ARG REVISION
+ARG GOPROXY
+ENV GOPROXY=${GOPROXY:-https://goproxy.cn,direct}
+# CGO on because pkg/device/nvidia pulls in go-nvml, whose bindings do not
+# compile with CGO_ENABLED=0.
+ENV CGO_ENABLED=1
+WORKDIR /src
+COPY . .
+# -buildvcs because the embedded version metadata comes from the VERSION and
+# REVISION build args instead, so this image says what it is whatever the source
+# tree was copied from.
+RUN go build -trimpath -buildvcs=false \
+      -ldflags "-s -w -X github.com/Project-HAMi/HAMi/pkg/version.version=${VERSION} -X github.com/Project-HAMi/HAMi/pkg/version.revision=${REVISION}" \
+      -o /out/scheduler ./cmd/scheduler
+
+FROM base
+COPY --from=build /out/scheduler /k8s-vgpu/bin/scheduler
