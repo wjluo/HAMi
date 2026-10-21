@@ -24,6 +24,7 @@ import (
 	"net/http"
 	"net/http/pprof"
 	"os"
+	"sync"
 	"time"
 
 	"github.com/julienschmidt/httprouter"
@@ -235,7 +236,7 @@ func start() error {
 		errCh <- fmt.Errorf("extender server error: %w", serve(extenderListener, extenderRouter(sher), tlsCfg))
 	}()
 	go func() {
-		errCh <- fmt.Errorf("server error: %w", serve(clusterListener, router, tlsCfg))
+		errCh <- fmt.Errorf("server error: %w", serve(clusterListener, extenderVerbGuard(router), tlsCfg))
 	}()
 	return <-errCh
 }
@@ -261,6 +262,68 @@ func clusterRouter(s *scheduler.Scheduler) *httprouter.Router {
 	router.GET("/readyz", routes.ReadyzRoute(s))
 	return router
 }
+
+// extenderVerbGuard wraps the cluster listener. httprouter offers no hook for
+// requests it is about to answer 404, so the misrouted call is spotted before
+// the router sees it.
+func extenderVerbGuard(h http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		warnMisroutedExtenderVerb(r.Method, r.URL.Path)
+		h.ServeHTTP(w, r)
+	})
+}
+
+// extenderVerbHint names the misconfiguration that turns device scheduling off
+// without leaving an error anywhere a user would look: a kube-scheduler config
+// that still calls /filter and /bind on the listener they were moved off. The
+// reply stays a 404; this only supplies the sentence that makes it findable.
+func extenderVerbHint(method, path string) (string, bool) {
+	if method != http.MethodPost {
+		return "", false
+	}
+	switch path {
+	case "/filter", "/bind":
+		return fmt.Sprintf("%s reached the cluster listener, but the scheduler extender verbs are served on --extender-bind=%s; "+
+			"point the kube-scheduler extender urlPrefix at that address, or every filter call answers 404 and no pod receives a device allocation",
+			path, config.ExtenderBind), true
+	}
+	return "", false
+}
+
+// warnMisroutedExtenderVerb logs the hint at most once per interval per verb,
+// because a stale config produces one of these per scheduling attempt.
+func warnMisroutedExtenderVerb(method, path string) {
+	msg, moved := extenderVerbHint(method, path)
+	if !moved || !extenderVerbHints.due(time.Now(), path) {
+		return
+	}
+	klog.ErrorS(nil, msg, "path", path, "extenderBind", config.ExtenderBind)
+}
+
+// verbThrottle suppresses a repeated warning until its interval has passed.
+type verbThrottle struct {
+	interval time.Duration
+	mu       sync.Mutex
+	last     map[string]time.Time
+}
+
+func (t *verbThrottle) due(now time.Time, key string) bool {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	if seen, ok := t.last[key]; ok && now.Sub(seen) < t.interval {
+		return false
+	}
+	t.last[key] = now
+	return true
+}
+
+func (t *verbThrottle) reset() {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	t.last = map[string]time.Time{}
+}
+
+var extenderVerbHints = &verbThrottle{interval: 5 * time.Minute, last: map[string]time.Time{}}
 
 func serve(listener net.Listener, handler http.Handler, tlsCfg *tls.Config) error {
 	server := &http.Server{

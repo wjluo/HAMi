@@ -27,6 +27,8 @@ import (
 	"time"
 
 	"k8s.io/klog/v2"
+
+	"github.com/Project-HAMi/HAMi/pkg/scheduler/config"
 )
 
 func TestStartProfilingServer(t *testing.T) {
@@ -230,6 +232,109 @@ func TestExtenderRouterServesOnlyExtenderVerbs(t *testing.T) {
 		if rec.Code != http.StatusNotFound {
 			t.Errorf("%s is served on the extender router (status %d), its callers are outside this pod", path, rec.Code)
 		}
+	}
+}
+
+// A kube-scheduler config that still calls the extender verbs where they used to
+// be gets a 404 and the cluster stops handing out devices, with nothing in the
+// extender's own log to explain it - the process never learns anyone tried to
+// call it. Reproduced on a live cluster: image moved to the split listener, the
+// 42-day-old ConfigMap still pointed at https://127.0.0.1:443, and every filter
+// call for every vendor 404'd for five days while pods just stayed Pending.
+func TestClusterRouterAnswersMisroutedExtenderVerb(t *testing.T) {
+	state := klog.CaptureState()
+	t.Cleanup(state.Restore)
+	extenderVerbHints.reset()
+	t.Cleanup(extenderVerbHints.reset)
+	var logs bytes.Buffer
+	klog.LogToStderr(false)
+	klog.SetOutput(&logs)
+
+	router := extenderVerbGuard(clusterRouter(nil))
+	for _, path := range []string{"/filter", "/bind"} {
+		rec := httptest.NewRecorder()
+		router.ServeHTTP(rec, httptest.NewRequest(http.MethodPost, path, strings.NewReader(undecodableBody)))
+		if rec.Code != http.StatusNotFound {
+			t.Errorf("%s status = %d, want 404 - the verb must stay unreachable here", path, rec.Code)
+		}
+	}
+	klog.Flush()
+	msg := logs.String()
+	for _, want := range []string{"/filter", "/bind", "extender-bind", "urlPrefix"} {
+		if !strings.Contains(msg, want) {
+			t.Errorf("warning = %q, want it to mention %q", msg, want)
+		}
+	}
+
+	// One line per attempt would bury the operator's real logs.
+	logs.Reset()
+	rec := httptest.NewRecorder()
+	router.ServeHTTP(rec, httptest.NewRequest(http.MethodPost, "/filter", strings.NewReader(undecodableBody)))
+	klog.Flush()
+	if logs.Len() != 0 {
+		t.Errorf("the same verb warned twice within the interval: %q", logs.String())
+	}
+
+	// A guard must not change what the router itself answers.
+	logs.Reset()
+	rec = httptest.NewRecorder()
+	router.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/healthz", nil))
+	if rec.Code != http.StatusOK {
+		t.Errorf("guarded router: /healthz status = %d, want 200", rec.Code)
+	}
+	klog.Flush()
+	if logs.Len() != 0 {
+		t.Errorf("a served path produced an extender warning: %q", logs.String())
+	}
+}
+
+func TestExtenderVerbHint(t *testing.T) {
+	previous := config.ExtenderBind
+	config.ExtenderBind = "127.0.0.1:9444"
+	t.Cleanup(func() { config.ExtenderBind = previous })
+
+	for _, tt := range []struct {
+		method string
+		path   string
+		moved  bool
+	}{
+		{http.MethodPost, "/filter", true},
+		{http.MethodPost, "/bind", true},
+		{http.MethodGet, "/filter", false},
+		{http.MethodPost, "/refit", false},
+		{http.MethodPost, "/webhook", false},
+		{http.MethodGet, "/healthz", false},
+		{http.MethodPost, "/filter/extra", false},
+		{http.MethodPost, "/", false},
+	} {
+		msg, moved := extenderVerbHint(tt.method, tt.path)
+		if moved != tt.moved {
+			t.Errorf("extenderVerbHint(%q) = %v, want %v", tt.path, moved, tt.moved)
+		}
+		if moved && !strings.Contains(msg, "127.0.0.1:9444") {
+			t.Errorf("hint for %s %q must name the listener the caller should use: %q", tt.method, tt.path, msg)
+		}
+		if !moved && msg != "" {
+			t.Errorf("non-extender %s %q produced a hint: %q", tt.method, tt.path, msg)
+		}
+	}
+}
+
+func TestVerbThrottle(t *testing.T) {
+	throttle := &verbThrottle{interval: time.Minute, last: map[string]time.Time{}}
+	base := time.Now()
+	if !throttle.due(base, "/filter") {
+		t.Fatal("the first occurrence must always be logged")
+	}
+	if throttle.due(base.Add(30*time.Second), "/filter") {
+		t.Error("a repeat inside the interval was allowed through")
+	}
+	if !throttle.due(base.Add(2*time.Minute), "/filter") {
+		t.Error("a repeat after the interval was suppressed")
+	}
+	// The two verbs break scheduling differently, so one must not mute the other.
+	if !throttle.due(base, "/bind") {
+		t.Error("/bind was muted by a /filter warning")
 	}
 }
 
