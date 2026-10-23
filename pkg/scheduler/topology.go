@@ -54,9 +54,10 @@ func resolveSuperpodSchedulerPolicy(pod *corev1.Pod) string {
 }
 
 // superpodPolicyEnabled reports whether the superpod scheduling policy is on for
-// pod. The flag is a free-form string a non-chart deployment can set to
-// anything, so an unrecognized value keeps the default rather than silently
-// turning convergence off, in the same spirit as the other policy readers.
+// pod. Both enable and spill run the policy; only disable turns it off. The
+// flag is a free-form string a non-chart deployment can set to anything, so an
+// unrecognized value keeps the default rather than silently turning convergence
+// off, in the same spirit as the other policy readers.
 func superpodPolicyEnabled(pod *corev1.Pod) bool {
 	value := resolveSuperpodSchedulerPolicy(pod)
 	if !util.IsValidSuperpodSchedulerPolicy(value) {
@@ -64,7 +65,20 @@ func superpodPolicyEnabled(pod *corev1.Pod) bool {
 			value, util.SuperpodSchedulerPolicyEnable.String())
 		return true
 	}
-	return util.SchedulerPolicyName(strings.TrimSpace(value)) == util.SuperpodSchedulerPolicyEnable
+	return util.SchedulerPolicyName(strings.TrimSpace(value)) != util.SuperpodSchedulerPolicyDisable
+}
+
+// superpodPolicySpillEnabled reports whether pod asked for the spill variant:
+// hold the workload inside its occupied superpod while any candidate in that
+// superpod fits, and fall back to a foreign superpod the moment it does not.
+// The default is strict (enable); spill is opt-in, because a fallback placement
+// is a degraded one and the operator has to ask for delivery over topology.
+func superpodPolicySpillEnabled(pod *corev1.Pod) bool {
+	value := resolveSuperpodSchedulerPolicy(pod)
+	if !util.IsValidSuperpodSchedulerPolicy(value) {
+		return false
+	}
+	return util.SchedulerPolicyName(strings.TrimSpace(value)) == util.SuperpodSchedulerPolicySpill
 }
 
 // superpodOutcome is what the policy decided, kept apart from the nodes it
@@ -82,6 +96,11 @@ type superpodOutcome struct {
 	InferServiceID string
 	// Domains lists the superpods the workload converges into.
 	Domains string
+	// IntentAnchor marks a first pod whose domain was chosen deterministically
+	// (crc32 of the service id) rather than inherited from a bound sibling. It
+	// separates "this is where the service decided to open" from "this is where
+	// the service already sits" in the event and the decision log.
+	IntentAnchor bool
 	// RackTier reports whether the convergence is at rack granularity.
 	RackTier bool
 	// SelectedNodeID is the candidate left at the head of the list.
@@ -92,6 +111,13 @@ type superpodOutcome struct {
 	Tier string
 	// Gated counts the candidates removed for sitting in another superpod.
 	Gated int
+	// CapacitySpill names the occupied superpod this pod could not be placed
+	// in because no candidate in that domain fit it this round, under the
+	// spill policy. Empty unless a spill actually happened. It is the honest
+	// whole-service capacity signal the extender /filter layer can observe:
+	// pre-sizing a domain from a replica count is invisible here, but "the
+	// occupied domain has run out of fitting candidates for this pod" is not.
+	CapacitySpill string
 	// ScorePreferred is the candidate the packing policy had put first before
 	// topology moved it, and OverrodeScore says whether that happened.
 	ScorePreferred string
@@ -137,7 +163,19 @@ func (o superpodOutcome) EventSuffix() string {
 // rather than claiming it converged into nothing.
 func (o superpodOutcome) domainsClause() string {
 	occupied := o.Domains != "" && o.Domains != "none"
+	if o.CapacitySpill != "" {
+		// The pod sits in a foreign superpod, so describing the domain it
+		// converged into would contradict the node the placement line names.
+		// Say what happened instead: the domain was full for this pod and the
+		// spill policy traded topology for delivery.
+		return fmt.Sprintf("service=%s domain [%s] had no fitting candidate this round, spilled to superpod=%d under the spill policy", o.InferServiceID, o.CapacitySpill, o.SuperPodID)
+	}
 	if o.InferServiceID != "" {
+		if o.IntentAnchor {
+			// Nothing is bound yet; naming the target as an intent keeps a
+			// first-pod placement from being read as an existing occupancy.
+			return fmt.Sprintf("service=%s opening superpod(s) [%s] by deterministic intent, no sibling bound yet", o.InferServiceID, o.Domains)
+		}
 		if !occupied {
 			return fmt.Sprintf("service=%s has no placement in any superpod yet", o.InferServiceID)
 		}
@@ -169,6 +207,7 @@ func (s *Scheduler) applySuperpodPolicy(scores *policy.NodeScoreList, pod *corev
 		return nil, superpodOutcome{}
 	}
 	outcome := superpodOutcome{Policy: scores.Policy}
+	spill := superpodPolicySpillEnabled(pod)
 
 	entries := make([]topotree.Entry, 0, len(scores.NodeList))
 	reports := make([]serverReport, 0, len(scores.NodeList))
@@ -229,6 +268,16 @@ func (s *Scheduler) applySuperpodPolicy(scores *policy.NodeScoreList, pod *corev
 	} else {
 		occupied = s.collectClusterOccupancy(pod.UID)
 	}
+	// The first pod of a labelled service has no bound sibling to follow, so a
+	// purely reactive gate would let two pods of one service open in two
+	// superpods at once. Seed a deterministic intent domain instead; once any
+	// sibling is bound the real occupancy above is non-empty and this is inert.
+	if inferServiceID != "" && len(occupied.SuperPodIDs) == 0 {
+		if intent := topotree.SyntheticFirstPodOccupied(inferServiceID, entries); len(intent.SuperPodIDs) > 0 {
+			occupied = intent
+			outcome.IntentAnchor = true
+		}
+	}
 	outcome.Domains = domainsString(occupied)
 	hasRack := occupied.HasRackTier()
 	outcome.RackTier = hasRack
@@ -237,12 +286,22 @@ func (s *Scheduler) applySuperpodPolicy(scores *policy.NodeScoreList, pod *corev
 	if inferServiceID != "" {
 		var kept []topotree.Entry
 		kept, dropped = topotree.Gate(entries, occupied)
-		if len(kept) > 0 {
+		switch {
+		case len(kept) > 0:
 			entries = kept
-		} else {
-			// Every candidate sits in another superpod. Reporting them as
-			// unfit is the point of the policy, so they are dropped rather
-			// than quietly kept.
+		case spill && len(dropped) > 0:
+			// The occupied domain has no candidate that fits this pod this
+			// round and no unannotated node is available either. Under spill
+			// the pod is placed in a foreign superpod rather than left pending:
+			// delivery over topology. Nothing is actually dropped, so the gate
+			// count stays zero and the decision is carried by CapacitySpill.
+			entries = dropped
+			outcome.CapacitySpill = outcome.Domains
+			dropped = nil
+		default:
+			// Strict policy: every candidate sits in another superpod, and
+			// reporting them as unfit is the point of the policy, so they are
+			// dropped rather than quietly kept.
 			entries = nil
 		}
 	}
@@ -280,6 +339,8 @@ func (s *Scheduler) applySuperpodPolicy(scores *policy.NodeScoreList, pod *corev
 		"pod", klog.KObj(pod),
 		"inferServiceID", inferServiceID,
 		"rackTier", hasRack,
+		"intentAnchor", outcome.IntentAnchor,
+		"capacitySpill", outcome.CapacitySpill,
 		"occupied", outcome.Domains,
 		"order", tiers,
 		"dropped", len(dropped),

@@ -72,11 +72,13 @@ scheduler:
     # `topology-aware` also makes the NVIDIA device plugin report GPU topology scores. The `hami.io/gpu-scheduler-policy` Pod annotation overrides it.
     gpuSchedulerPolicy: spread
     # -- Superpod domain policy: `enable` keeps a workload inside the superpod it converges into, and a
-    # full domain leaves the Pod pending instead of placing it in another superpod. `disable` leaves node
-    # choice to the two policies above. Nodes without `hami.io/superpodid` annotations are never excluded,
-    # so a cluster that reports no topology is unaffected. The `hami.io/superpod-scheduler-policy` Pod
-    # annotation overrides it for one workload, in both directions. It is passed as the
-    # `--superpod-scheduler-policy` flag.
+    # full domain leaves the Pod pending instead of placing it in another superpod. `spill` keeps it inside
+    # that domain while a candidate there fits, but places the Pod in a foreign superpod (reported in the
+    # Pod event and the scheduler log) once its own domain has no candidate that fits, trading topology for
+    # delivery rather than leaving it pending. `disable` leaves node choice to the two policies above.
+    # Nodes without `hami.io/superpodid` annotations are never excluded, so a cluster that reports no
+    # topology is unaffected. The `hami.io/superpod-scheduler-policy` Pod annotation overrides it for one
+    # workload, in every direction. It is passed as the `--superpod-scheduler-policy` flag.
     superpodSchedulerPolicy: enable
   # -- Address the scheduler serves Prometheus metrics on, as `[host]:port`. The chart also takes the port from it for the `metrics` container port.
   metricsBindAddress: ":9395"

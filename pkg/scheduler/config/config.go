@@ -67,9 +67,11 @@ var (
 	// NodeSchedulerPolicy is config this scheduler node to use `binpack` or `spread`. default value is binpack.
 	NodeSchedulerPolicy = util.NodeSchedulerPolicyBinpack.String()
 
-	// SuperpodSchedulerPolicy turns superpod domain convergence on or off, as
-	// `enable` or `disable`. It defaults to enable, and a value naming neither
-	// is read as enable with a warning.
+	// SuperpodSchedulerPolicy sets superpod domain convergence, as `enable`
+	// (strict), `spill` (strict, but place in a foreign superpod when the
+	// workload's own domain has no fitting candidate this round), or `disable`.
+	// It defaults to enable, and a value naming none of the three is read as
+	// enable with a warning.
 	SuperpodSchedulerPolicy = util.SuperpodSchedulerPolicyEnable.String()
 
 	// NodeLabelSelector is scheduler filter node by node label.

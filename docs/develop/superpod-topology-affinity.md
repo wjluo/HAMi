@@ -64,14 +64,15 @@ in the chart) and on by default.
 | Value | Behaviour |
 | --- | --- |
 | `enable` | Candidates in a superpod the workload does not belong to are taken out of the candidate list. If that leaves nothing, the Pod stays pending - it is not placed in a foreign superpod. |
+| `spill` | The same strict hold while any candidate in the workload's own superpod fits the Pod, but when the occupied domain has no fitting candidate this round the Pod is placed in a foreign superpod instead of being left pending. The Pod event and the decision log name the domain it spilled out of, so the topology-for-delivery trade is visible without reading scheduler internals. It is the capacity escape for a converged service whose domain has filled: this layer cannot see a replica count to pre-size against, but it can see that no candidate in the domain fits the Pod in front of it. |
 | `disable` | No topology handling at all, and the ranking above goes with it: the binpack/spread scores alone pick the node. |
 
 An unrecognised value is reported and read as `enable`, so a typo cannot
 silently drop convergence.
 
-The same two values can be set on one Pod with the
+The same values can be set on one Pod with the
 `hami.io/superpod-scheduler-policy` annotation, which overrides the cluster
-default for that workload in both directions. It exists because the cluster
+default for that workload in any direction. It exists because the cluster
 default is strict: one wrong node annotation can leave every Pod of a service
 pending, and without the annotation the only remedy is to turn convergence off
 for the whole cluster. An unrecognised annotation value is reported and the
@@ -95,9 +96,16 @@ cluster that cannot deliver compute:
   the plugin did not report where the node is, not that the node is elsewhere.
   Gating those would lock out a mixed vendor cluster, and would punish a
   device-plugin rollout that has not reached every node yet.
-- **Nothing placed yet means nothing to converge into.** The first pod of a
-  service, or the first workload on an empty cluster, sees the full candidate
-  list.
+- **The first pod of a labelled service opens by deterministic intent.** With
+  nothing bound yet, two pods of one service evaluated in the same round would
+  each keep their own best node and open the service in two superpods at once.
+  So before any sibling exists, the pod is anchored to one superpod chosen as
+  `crc32(serviceID)` over the sorted candidate superpods, and the gate holds it
+  there exactly as it would for a later pod. The target is drawn from the
+  candidates that fit this round, so the intent never strands the first pod on
+  an empty domain. Once any sibling binds, the real occupancy takes over and the
+  intent is inert. An unlabelled pod, which states no service to converge, still
+  sees the full candidate list and is only *ordered* towards occupied domains.
 
 The rack level narrows ordering but never the candidate set: refusing a node
 for sitting in another rack of the same superpod would turn a bandwidth
@@ -195,13 +203,15 @@ bandwidth preference into a scheduling constraint that can hold a service
 pending when the cluster has capacity elsewhere.
 
 The default that shipped is the strict one, because a preference the scheduler
-can quietly ignore is not something an operator can rely on. The two escape
-valves are what makes the strict default safe to ship: `disable` for the whole
-cluster, or `hami.io/superpod-scheduler-policy: disable` on the pods that must
-not wait for their domain. If the product owner would rather have affinity-only
-semantics for every workload, that is a one-line change to the default in the
-chart - and the rack level is already preference-only, never a gate, for exactly
-this reason.
+can quietly ignore is not something an operator can rely on. The escape valves
+are what makes the strict default safe to ship: `disable` for the whole cluster,
+`hami.io/superpod-scheduler-policy: disable` on the pods that must not wait for
+their domain, and `hami.io/superpod-scheduler-policy: spill` for a workload that
+wants to stay converged while its domain has room but would rather be delivered
+than pending once it does not. If the product owner would rather have
+affinity-only semantics for every workload, that is a one-line change to the
+default in the chart - and the rack level is already preference-only, never a
+gate, for exactly this reason.
 
 ## What the decision looks like from outside
 
@@ -264,9 +274,14 @@ are the security boundary of this feature:
 - **`hami.io/inferserviceid` on a Pod** is set by whoever writes the workload.
   It does not buy devices - the quota manager and the extender still decide how
   much a pod gets - but it does choose which superpod the pod insists on, and
-  which other pods it converges with. Where co-location inside a domain is
-  sensitive, validate the label's value per namespace (a validating webhook or
-  an admission policy) instead of relying on tenants to label honestly.
+  which other pods it converges with. It is also the seed for the first pod's
+  deterministic intent anchor, so the label value itself picks which candidate
+  superpod the service opens in (via `crc32(serviceID)` over the sorted
+  candidate superpods). Where co-location inside a domain is sensitive,
+  validate the label's value per namespace (a validating webhook or an
+  admission policy) instead of relying on tenants to label honestly - a caller
+  who can enumerate service IDs can also steer a workload toward a specific
+  superpod.
 - **`hami.io/superpod-scheduler-policy` on a Pod** lets a workload opt out of
   convergence for itself. That is deliberate: a policy that can pin every pod of
   a service must also have a per-workload release valve, and freeing one's own

@@ -83,6 +83,16 @@ const (
 	// SuperpodSchedulerPolicyEnable keeps a converged workload inside the
 	// superpod domain it already occupies.
 	SuperpodSchedulerPolicyEnable SchedulerPolicyName = "enable"
+	// SuperpodSchedulerPolicySpill keeps the workload inside its occupied
+	// superpod as long as any candidate node in that superpod fits the pod,
+	// and falls back to foreign superpods the moment the domain has no fitting
+	// candidate this round. The fallback is placed and reported, not silently
+	// opened: the placement event and the decision log name the domain that
+	// spilled so an operator can see the topology/capacity trade without
+	// reading scheduler internals. It exists because pre-sizing a domain from
+	// a replica count is not visible at the extender /filter layer, but "the
+	// occupied domain has no fitting candidate for this pod" is.
+	SuperpodSchedulerPolicySpill SchedulerPolicyName = "spill"
 	// SuperpodSchedulerPolicyDisable leaves node choice to binpack/spread alone.
 	SuperpodSchedulerPolicyDisable SchedulerPolicyName = "disable"
 )
@@ -94,7 +104,8 @@ const (
 	GPUSchedulerPolicyAnnotationKey = "hami.io/gpu-scheduler-policy"
 	// SuperpodSchedulerPolicyAnnotationKey is user set Pod annotation to change
 	// the cluster's superpod domain policy for this Pod alone. See
-	// SuperpodSchedulerPolicyEnable and SuperpodSchedulerPolicyDisable.
+	// SuperpodSchedulerPolicyEnable, SuperpodSchedulerPolicySpill and
+	// SuperpodSchedulerPolicyDisable.
 	SuperpodSchedulerPolicyAnnotationKey = "hami.io/superpod-scheduler-policy"
 	// DeviceScoringWeightsAnnotationKey configures per-Pod slot, core, and memory scoring weights.
 	DeviceScoringWeightsAnnotationKey = "hami.io/device-scoring-weights"

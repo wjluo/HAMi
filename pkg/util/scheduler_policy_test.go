@@ -138,11 +138,12 @@ func TestGetGPUSchedulerPolicyByPodNormalizesAcceptedValues(t *testing.T) {
 	assert.Equal(t, GetGPUSchedulerPolicyByPod(" binpack ", nil), "binpack")
 }
 
-// The superpod policy's two values are the accepted spellings of both the
+// The superpod policy's three values are the accepted spellings of both the
 // --superpod-scheduler-policy flag and its Helm value, so they are pinned as
 // literals the way the topology annotation keys are.
 func TestSuperpodSchedulerPolicyValues(t *testing.T) {
 	assert.Equal(t, "enable", SuperpodSchedulerPolicyEnable.String())
+	assert.Equal(t, "spill", SuperpodSchedulerPolicySpill.String())
 	assert.Equal(t, "disable", SuperpodSchedulerPolicyDisable.String())
 }
 
@@ -152,12 +153,15 @@ func TestIsValidSuperpodSchedulerPolicy(t *testing.T) {
 		want   bool
 	}{
 		{"enable", true},
+		{"spill", true},
 		{"disable", true},
 		{" enable", true},
+		{"spill ", true},
 		{"disable ", true},
 		{"", false},
 		{"   ", false},
 		{"Enable", false},
+		{"Spill", false},
 		{"on", false},
 		{"true", false},
 		{"superpod", false},

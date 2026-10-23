@@ -73,7 +73,7 @@ func init() {
 	rootCmd.Flags().StringVar(&config.SchedulerName, "scheduler-name", "", "the name to be added to pod.spec.schedulerName if not empty")
 	rootCmd.Flags().StringVar(&config.NodeSchedulerPolicy, "node-scheduler-policy", util.NodeSchedulerPolicyBinpack.String(), "node scheduler policy")
 	rootCmd.Flags().StringVar(&device.GPUSchedulerPolicy, "gpu-scheduler-policy", util.GPUSchedulerPolicySpread.String(), "GPU scheduler policy")
-	rootCmd.Flags().StringVar(&config.SuperpodSchedulerPolicy, "superpod-scheduler-policy", util.SuperpodSchedulerPolicyEnable.String(), "keep a converged workload inside one superpod domain, or let node choice follow binpack/spread alone when `disable`")
+	rootCmd.Flags().StringVar(&config.SuperpodSchedulerPolicy, "superpod-scheduler-policy", util.SuperpodSchedulerPolicyEnable.String(), "superpod domain policy: `enable` holds a converged workload strictly inside its domain, `spill` holds it but places it in a foreign superpod when its own domain has no fitting candidate, `disable` lets node choice follow binpack/spread alone")
 	rootCmd.Flags().StringVar(&config.MetricsBindAddress, "metrics-bind-address", ":9395", "The TCP address that the scheduler should bind to for serving prometheus metrics(e.g. 127.0.0.1:9395, :9395)")
 	rootCmd.Flags().StringToStringVar(&config.NodeLabelSelector, "node-label-selector", nil, "key=value pairs separated by commas")
 

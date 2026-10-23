@@ -367,10 +367,10 @@ func TestApplySuperpodPolicyOutcomeDescribesThePlacement(t *testing.T) {
 	}
 }
 
-// The first pod of a service, and any pod in a cluster nothing has placed yet,
-// has no domain to converge into. Saying "converged into superpod(s) [none]"
-// would read as a bug to the operator, so the clause has to name the absence
-// instead of pretending an empty set is a domain.
+// An unlabeled pod, and a peer-of-a-service case, still have to name the
+// absence of a domain rather than pretend an empty set is one. A *labeled*
+// first pod no longer has an empty domain: the intent anchor has given it a
+// deterministic superpod to open, and the clause has to say so.
 func TestApplySuperpodOutcomeNamesAnEmptyDomain(t *testing.T) {
 	tests := []struct {
 		name        string
@@ -379,10 +379,10 @@ func TestApplySuperpodOutcomeNamesAnEmptyDomain(t *testing.T) {
 		want        string
 		deny        string
 	}{{
-		name:    "labeled pod with no placement yet",
+		name:    "labeled pod with no sibling yet opens by deterministic intent",
 		service: "svc-m",
-		want:    "service=svc-m has no placement in any superpod yet",
-		deny:    "converged",
+		want:    "by deterministic intent, no sibling bound yet",
+		deny:    "converged into",
 	}, {
 		name:        "labeled pod once a peer of the same service holds a superpod",
 		service:     "svc-m",
@@ -510,8 +510,12 @@ func TestApplySuperpodPolicyUnlabeledPodPrefersUsedDomain(t *testing.T) {
 	}
 }
 
-// Nothing is placed yet, so there is no domain to hold the pod to.
-func TestApplySuperpodPolicyIdleClusterIsInert(t *testing.T) {
+// A labeled first pod on a cluster nothing has placed yet is not left to free
+// choice: the intent anchor names a deterministic superpod to open and gates the
+// foreign one out, which is what stops two concurrent first pods of one service
+// from opening two domains. Which superpod wins is a property of the service id,
+// so the assertion is structural - exactly one node survives, in one superpod.
+func TestApplySuperpodPolicyLabeledFirstPodAnchorsOnEmptyCluster(t *testing.T) {
 	s := NewScheduler()
 	t.Cleanup(func() { close(s.stopCh) })
 
@@ -519,13 +523,130 @@ func TestApplySuperpodPolicyIdleClusterIsInert(t *testing.T) {
 	sp2 := topoNode("node-sp2", "2", "2", "2")
 	scores := scoreList(nodeScore(sp1, 10), nodeScore(sp2, 20))
 
-	dropped, _ := s.applySuperpodPolicy(scores, inferPod("first-pod", "svc-j"))
+	dropped, outcome := s.applySuperpodPolicy(scores, inferPod("first-pod", "svc-j"))
 
-	if dropped != nil {
-		t.Errorf("dropped = %v, want none on an empty cluster", droppedIDs(dropped))
+	if !outcome.IntentAnchor {
+		t.Fatalf("IntentAnchor = false, want a labeled first pod on an empty cluster to open by intent")
 	}
-	if want := []string{"node-sp1", "node-sp2"}; !equal(orderOf(scores), want) {
-		t.Errorf("order = %v, want it left alone", want)
+	if len(scores.NodeList) != 1 {
+		t.Fatalf("kept = %v, want the foreign superpod gated out so one node survives", orderOf(scores))
+	}
+	if got := droppedIDs(dropped); len(got) != 1 {
+		t.Fatalf("dropped = %v, want exactly the foreign node gated out", got)
+	}
+	if outcome.Domains == "" || outcome.Domains == "none" {
+		t.Errorf("Domains = %q, want the anchored superpod named", outcome.Domains)
+	}
+	if !strings.Contains(outcome.EventSuffix(), "by deterministic intent") {
+		t.Errorf("event suffix = %q, want it to name the deterministic intent", outcome.EventSuffix())
+	}
+}
+
+// podWithSuperpodPolicy returns a labelled infer-service pod carrying the
+// per-Pod superpod policy annotation, so a test can select enable/spill/disable
+// without touching the cluster default.
+func podWithSuperpodPolicy(name, serviceID, policy string) *corev1.Pod {
+	pod := inferPod(name, serviceID)
+	pod.Annotations = map[string]string{util.SuperpodSchedulerPolicyAnnotationKey: policy}
+	return pod
+}
+
+// The spill policy is the whole-service capacity signal this layer can honestly
+// observe: the service's occupied superpod offered no candidate that fits this
+// pod this round (the device filter already dropped every node in it), so the
+// pod would otherwise sit Pending with no self-heal. Spill trades topology for
+// delivery, places the pod in a foreign superpod, and reports the domain it
+// spilled out of.
+func TestApplySuperpodPolicySpillPlacesForeignWhenDomainFull(t *testing.T) {
+	s := NewScheduler()
+	t.Cleanup(func() { close(s.stopCh) })
+
+	full := topoNode("node-full", "1", "1", "1")
+	foreign := topoNode("node-foreign", "2", "2", "2")
+	registerTopoNode(t, s, full)
+	registerTopoNode(t, s, foreign)
+	// The service is anchored to superpod 1 by this bound sibling.
+	s.podManager.AddPod(inferPod("svc-holder", "svc-f"), "node-full", device.PodDevices{})
+
+	// The only candidate that reaches the filter is the foreign node: node-full
+	// has already been dropped upstream for lack of capacity.
+	scores := scoreList(nodeScore(foreign, 10))
+	dropped, outcome := s.applySuperpodPolicy(scores,
+		podWithSuperpodPolicy("svc-new", "svc-f", util.SuperpodSchedulerPolicySpill.String()))
+
+	if len(dropped) != 0 {
+		t.Errorf("dropped = %v, want spill to keep the foreign node rather than reject it", droppedIDs(dropped))
+	}
+	if outcome.CapacitySpill != "1" {
+		t.Errorf("CapacitySpill = %q, want the full superpod 1 named", outcome.CapacitySpill)
+	}
+	if got := scores.NodeList[len(scores.NodeList)-1].NodeID; got != "node-foreign" {
+		t.Fatalf("best node = %q, want the foreign node placed rather than left pending (order=%v)", got, orderOf(scores))
+	}
+	if outcome.Tier != "other-superpod" {
+		t.Errorf("Tier = %q, want the spill recorded as a foreign placement", outcome.Tier)
+	}
+	if !strings.Contains(outcome.EventSuffix(), "spilled to superpod=2") {
+		t.Errorf("event suffix = %q, want it to name the spill", outcome.EventSuffix())
+	}
+}
+
+// Spill only relaxes the gate under exhaustion. While a candidate inside the
+// occupied domain still fits, the workload stays there and nothing is spilled,
+// so the fallback cannot quietly become the default and break convergence.
+func TestApplySuperpodPolicySpillStaysInDomainWhenItFits(t *testing.T) {
+	s := NewScheduler()
+	t.Cleanup(func() { close(s.stopCh) })
+
+	home := topoNode("node-home", "1", "1", "1")
+	foreign := topoNode("node-foreign", "2", "2", "2")
+	registerTopoNode(t, s, home)
+	registerTopoNode(t, s, foreign)
+	s.podManager.AddPod(inferPod("svc-holder", "svc-f"), "node-home", device.PodDevices{})
+
+	// node-home (in the occupied superpod) fits and is present, so the foreign
+	// node is gated out exactly as under the strict policy.
+	scores := scoreList(nodeScore(foreign, 20), nodeScore(home, 10))
+	dropped, outcome := s.applySuperpodPolicy(scores,
+		podWithSuperpodPolicy("svc-new", "svc-f", util.SuperpodSchedulerPolicySpill.String()))
+
+	if outcome.CapacitySpill != "" {
+		t.Errorf("CapacitySpill = %q, want no spill when the domain still fits", outcome.CapacitySpill)
+	}
+	if got := scores.NodeList[len(scores.NodeList)-1].NodeID; got != "node-home" {
+		t.Fatalf("best node = %q, want the in-domain node (order=%v)", got, orderOf(scores))
+	}
+	if !sameSet(droppedIDs(dropped), []string{"node-foreign"}) {
+		t.Errorf("dropped = %v, want the foreign node gated out as usual", droppedIDs(dropped))
+	}
+}
+
+// The default stays strict: without the spill annotation, a labelled pod whose
+// occupied domain is full is reported as gated-out-with-no-candidate, exactly as
+// before, so enabling this feature cannot strand a workload that was relying on
+// strict convergence to keep it pending until capacity frees in-domain.
+func TestApplySuperpodPolicyStrictDefaultStillStrandsWhenDomainFull(t *testing.T) {
+	s := NewScheduler()
+	t.Cleanup(func() { close(s.stopCh) })
+
+	full := topoNode("node-full", "1", "1", "1")
+	foreign := topoNode("node-foreign", "2", "2", "2")
+	registerTopoNode(t, s, full)
+	registerTopoNode(t, s, foreign)
+	s.podManager.AddPod(inferPod("svc-holder", "svc-f"), "node-full", device.PodDevices{})
+
+	scores := scoreList(nodeScore(foreign, 10))
+	dropped, outcome := s.applySuperpodPolicy(scores,
+		podWithSuperpodPolicy("svc-new", "svc-f", util.SuperpodSchedulerPolicyEnable.String()))
+
+	if outcome.CapacitySpill != "" {
+		t.Errorf("CapacitySpill = %q, want the strict default never to spill", outcome.CapacitySpill)
+	}
+	if len(scores.NodeList) != 0 {
+		t.Errorf("kept = %v, want the strict default to drop the foreign candidate and leave no node", orderOf(scores))
+	}
+	if !sameSet(droppedIDs(dropped), []string{"node-foreign"}) {
+		t.Errorf("dropped = %v, want node-foreign gated out as foreign", droppedIDs(dropped))
 	}
 }
 
@@ -632,6 +753,12 @@ func TestApplySuperpodPolicyFallsBackToSnapshotWithoutLister(t *testing.T) {
 	}
 }
 
+// The occupancy of the service must not include the pod being scheduled.
+// A live sibling pins the service to node-sp2, which keeps the intent anchor
+// from firing, so this exercises self-exclusion alone. If self counted toward
+// its own service, node-sp1 would stay in play, the two superpods would both
+// look occupied, and the higher-scoring sp1 could keep the pod in the superpod
+// it is leaving.
 func TestApplySuperpodPolicyExcludesSelf(t *testing.T) {
 	s := NewScheduler()
 	t.Cleanup(func() { close(s.stopCh) })
@@ -642,16 +769,18 @@ func TestApplySuperpodPolicyExcludesSelf(t *testing.T) {
 	registerTopoNode(t, s, sp2)
 
 	self := inferPod("victim-pod", "svc-e")
+	peer := inferPod("peer-pod", "svc-e")
 	s.podManager.AddPod(self, "node-sp1", device.PodDevices{})
+	s.podManager.AddPod(peer, "node-sp2", device.PodDevices{})
 
-	scores := scoreList(nodeScore(sp1, 10), nodeScore(sp2, 20))
+	scores := scoreList(nodeScore(sp2, 10), nodeScore(sp1, 20))
 	dropped, _ := s.applySuperpodPolicy(scores, self)
 
-	if dropped != nil {
-		t.Errorf("dropped = %v, want the departing pod not to gate the cluster out", droppedIDs(dropped))
+	if !sameSet(droppedIDs(dropped), []string{"node-sp1"}) {
+		t.Fatalf("dropped = %v, want self's own superpod gated out because self is excluded from occupancy", droppedIDs(dropped))
 	}
 	if got := scores.NodeList[len(scores.NodeList)-1].NodeID; got != "node-sp2" {
-		t.Fatalf("best node = %q, want node-sp2 so the pod can leave its old superpod (order=%v)", got, orderOf(scores))
+		t.Fatalf("best node = %q, want node-sp2, the peer's superpod, so the pod can leave its old superpod (order=%v)", got, orderOf(scores))
 	}
 }
 
