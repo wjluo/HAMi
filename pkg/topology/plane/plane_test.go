@@ -365,3 +365,76 @@ func TestResolveNilNodeIsSafe(t *testing.T) {
 		assert.Equal(t, got[p].State, Unlabeled)
 	}
 }
+
+// cicpoc-gpu2 as observed on the shared cluster on 2026-10-26. Two machine
+// writers describe the same box and disagree on both the domain and the rack:
+// hami.io/* (the vendor-reported ids) against the hami.io/topotree.* mirror.
+// First-wins here is not a harmless choice — the domain tier is the capability
+// key, so reading 20 and ignoring 10 places workloads against a fabric the
+// other writer says is a different superpod, and the audit then reports a
+// labelled fleet with nothing wrong in it.
+func TestResolveReportsDisagreeingMachineWriters(t *testing.T) {
+	got := ResolveWith(gpu2Node(), nil, Config{})
+
+	assert.Equal(t, got[ScaleUp].State, Conflict)
+	assert.Equal(t, got[ScaleUp].Reason, ReasonSourceConflict)
+	assert.Equal(t, len(got[ScaleUp].Tiers), 0, "a plane that contradicts itself must not contribute a domain")
+}
+
+// The mirror is idempotent on cicpoc-gpu1: hami.io/* and hami.io/topotree.*
+// carry the same numbers. Equal values from two writers are a relabel, not a
+// contradiction, and must stay a readable topology.
+func TestResolveAgreeingMachineWritersStayLabeled(t *testing.T) {
+	got := ResolveWith(gpu1Node(), nil, Config{ServiceDefault: "cluster"})
+
+	assert.Equal(t, got[ScaleUp].State, Labeled)
+	assert.DeepEqual(t, got[ScaleUp].Tiers, []int64{10, 1, 1})
+}
+
+// The audit is the instrument an operator uses to decide whether labelling is
+// good enough to turn the policy on, so a self-contradicting node has to show
+// up in it.
+func TestAuditCountsTheLiveFleetContradiction(t *testing.T) {
+	nodes := []*corev1.Node{
+		gpu1Node(), gpu2Node(),
+		nodeWith(map[string]string{"topology.ascend.huawei.com/path": "leaf-1"}, nil),
+		&corev1.Node{ObjectMeta: metav1.ObjectMeta{Name: "cicpoc-mst1"}},
+	}
+	sum := Audit(nodes, nil, Config{ServiceDefault: "cluster"})
+
+	assert.Equal(t, sum.Nodes, 4)
+	assert.Equal(t, sum.ByState(ScaleUp, Labeled), 1)
+	assert.Equal(t, sum.ByState(ScaleUp, Conflict), 1)
+	assert.Equal(t, sum.ReasonCount(ReasonSourceConflict), 1)
+}
+
+func gpu1Node() *corev1.Node {
+	return &corev1.Node{ObjectMeta: metav1.ObjectMeta{
+		Name: "cicpoc-gpu1",
+		Labels: map[string]string{
+			"topology.ascend.huawei.com/path": "leaf-1",
+		},
+		Annotations: map[string]string{
+			"hami.io/rackid":               "1",
+			"hami.io/serverid":             "1",
+			"hami.io/superpodid":           "10",
+			"hami.io/topotree.rackid":      "1",
+			"hami.io/topotree.serverid":    "1",
+			"hami.io/topotree.supernodeid": "10",
+		},
+	}}
+}
+
+func gpu2Node() *corev1.Node {
+	return &corev1.Node{ObjectMeta: metav1.ObjectMeta{
+		Name: "cicpoc-gpu2",
+		Annotations: map[string]string{
+			"hami.io/rackid":               "2",
+			"hami.io/serverid":             "2",
+			"hami.io/superpodid":           "20",
+			"hami.io/topotree.rackid":      "1",
+			"hami.io/topotree.serverid":    "2",
+			"hami.io/topotree.supernodeid": "10",
+		},
+	}}
+}

@@ -195,23 +195,45 @@ func resolve(n *corev1.Node, p Plane, reg *Registry, cfg Config) Domain {
 		return Domain{State: Unlabeled}
 	}
 	spec := specs[p]
-	// Machine writers own the annotation family: the legacy per-id annotations
-	// and the combined per-plane spelling both describe the same hardware truth.
+	combinedValues := map[string]string{}
+	if combined, ok := n.Annotations[spec.combined]; ok {
+		combinedValues = parseCombined(combined)
+	}
+
+	// Machine writers own the annotation family: the legacy per-id annotations,
+	// the topotree mirror, and the combined per-plane spelling all describe the
+	// same hardware truth, so where they name the same tier differently there is
+	// no correct pick — the node's topology is not knowable this round.
 	anno := map[string]string{}
+	selfContradicted := false
 	for _, t := range spec.tiers {
+		ids := map[int64]bool{}
+		for _, key := range t.annos {
+			if v, ok := n.Annotations[key]; ok {
+				ids[canonicalID(strings.TrimSpace(v))] = true
+			}
+		}
+		if v, ok := combinedValues[t.name]; ok {
+			ids[canonicalID(v)] = true
+		}
+		if len(ids) > 1 {
+			selfContradicted = true
+		}
+		// The writers agree, so any of their spellings describes the tier.
 		for _, key := range t.annos {
 			if v, ok := n.Annotations[key]; ok {
 				anno[t.name] = strings.TrimSpace(v)
 				break
 			}
 		}
-	}
-	if combined, ok := n.Annotations[spec.combined]; ok {
-		for name, v := range parseCombined(combined) {
-			if _, exists := anno[name]; !exists {
-				anno[name] = v
+		if _, ok := anno[t.name]; !ok {
+			if v, ok := combinedValues[t.name]; ok {
+				anno[t.name] = v
 			}
 		}
+	}
+	if selfContradicted {
+		return Domain{State: Conflict, Reason: ReasonSourceConflict}
 	}
 
 	// Operators own the label family, one label per tier, plus the vendor path
