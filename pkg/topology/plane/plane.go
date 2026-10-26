@@ -61,6 +61,14 @@ func All() []Plane {
 	return []Plane{ScaleUp, Compute, Service}
 }
 
+// Depth is how many tiers a plane reports, which is what makes an LCP count
+// readable: "one tier in common" means something different on a two-tier fabric
+// than on a four-tier one. Callers compare an LCP against it to ask whether two
+// nodes sit at the same place on the fabric.
+func Depth(p Plane) int {
+	return len(specs[p].tiers)
+}
+
 // State tells the caller how much it can trust a node's topology on one plane.
 type State string
 

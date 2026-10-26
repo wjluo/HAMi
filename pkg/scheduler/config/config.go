@@ -74,6 +74,17 @@ var (
 	// enable with a warning.
 	SuperpodSchedulerPolicy = util.SuperpodSchedulerPolicyEnable.String()
 
+	// TopologyScoreWeight scales the compute-leaf adjacency score that pulls a
+	// task's later pods toward the leaf its siblings already sit on. The value
+	// is pinned to the one tuned on the fleet running this scheme today, and a
+	// unit test fails if the default drifts off it, because the score is only
+	// comparable across releases while the weight is. It is calibrated against
+	// the packing score: at 1.0 the leaf boost is roughly the same size as one
+	// GPU of occupancy difference, so an uncalibrated weight can quietly hand
+	// the choice back to binpack. Zero turns the soft score off; only the
+	// unified superpod switch can turn the whole feature off.
+	TopologyScoreWeight float32 = 3.0
+
 	// TopologyServicePlaneDomain is the domain name given to the 25GE business
 	// plane on nodes that carry no hami.io/topo.service label. The fabric
 	// interconnects every node, so an unlabelled service plane must not read as

@@ -74,10 +74,7 @@ func (s *Scheduler) reportSuperpodTopology(nodes []*corev1.Node) (plane.AuditSum
 		return plane.AuditSummary{}, false
 	}
 
-	reg, err := s.loadDomainRegistry()
-	if err != nil {
-		klog.Warningf("topo-plane domain registry unavailable, vendor leaf paths stay unmapped: %v", err)
-	}
+	reg := s.ensureDomainRegistry()
 	cfg := plane.Config{ServiceDefault: config.TopologyServicePlaneDomain}
 	summary := plane.Audit(nodes, reg, cfg)
 

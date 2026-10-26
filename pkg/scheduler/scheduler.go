@@ -51,6 +51,7 @@ import (
 	metrics "github.com/Project-HAMi/HAMi/pkg/metrics"
 	"github.com/Project-HAMi/HAMi/pkg/scheduler/config"
 	"github.com/Project-HAMi/HAMi/pkg/scheduler/policy"
+	"github.com/Project-HAMi/HAMi/pkg/topology/plane"
 	"github.com/Project-HAMi/HAMi/pkg/util"
 	"github.com/Project-HAMi/HAMi/pkg/util/client"
 	"github.com/Project-HAMi/HAMi/pkg/util/leaderelection"
@@ -100,9 +101,15 @@ type Scheduler struct {
 	conflictingTopologyWarn sync.Once
 	// topoAudited latches the one-shot plane audit, so the 15 second register
 	// loop reports the fleet's topology coverage once instead of every pass.
-	topoAudited   atomic.Bool
-	eventRecorder record.EventRecorder
-	started       uint32 // 0 = false, 1 = true
+	topoAudited atomic.Bool
+	// domainRegistry caches the table that turns a vendor leaf path into a
+	// compute domain. It is read by the plane audit and by the soft score on
+	// every round, so an operator editing the ConfigMap is seen on the
+	// scheduler's next restart - the same lifetime the audit already has.
+	domainRegistry     atomic.Pointer[plane.Registry]
+	domainRegistryOnce sync.Once
+	eventRecorder      record.EventRecorder
+	started            uint32 // 0 = false, 1 = true
 
 	lock   sync.RWMutex
 	synced atomic.Bool

@@ -487,6 +487,11 @@ func (s *Scheduler) calcScoreWithOptions(nodes *map[string]*NodeUsage, resourceR
 	wg.Wait()
 	close(errCh)
 
+	// The compute-leaf score goes on the nodes that fit, before any of them is
+	// sorted or the domain gate cuts candidates: it can only reorder the
+	// survivors, never rescue a node the device fit rejected.
+	s.applyLeafAdjacency(&res, task)
+
 	if recordEvents && len(res.NodeList) == 0 {
 		s.recordFilteringFailures(task, failureReason)
 	}

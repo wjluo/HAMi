@@ -518,35 +518,25 @@ func domainsString(occ topotree.Occupied) string {
 // widened set is recomputed from live placements every round. Leaving it out
 // means the task keeps the domain the gate actually converged it into, while
 // the pod that slipped out stays visible as a fact to report.
+//
+// The walk itself lives in eachTaskSibling, shared with the soft score, so the
+// two halves of the feature cannot end up counting one task's siblings by
+// different rules; each caller decides for itself what an escaped pod means.
 func (s *Scheduler) collectTaskOccupancy(taskID string, selfUID k8stypes.UID) (topotree.Occupied, map[int64]int) {
-	podsInfo := s.podManager.ListPodsInfo()
-	scheduled := make([]topotree.ScheduledPod, 0, len(podsInfo))
+	scheduled := make([]topotree.ScheduledPod, 0)
 	escaped := make(map[int64]int)
-	for _, podInfo := range podsInfo {
-		if podInfo == nil || podInfo.Pod == nil || podInfo.UID == selfUID {
-			continue
-		}
-		if isPodFinished(podInfo.Pod) {
-			continue
-		}
-		if util.GetTaskID(podInfo.Pod) != taskID {
-			continue
-		}
-		node := s.topologyNode(podInfo.NodeID)
-		if node == nil {
-			continue
-		}
+	s.eachTaskSibling(taskID, selfUID, func(sibling *corev1.Pod, node *corev1.Node) {
 		superpodID := util.GetNodeSuperPodID(node)
-		if util.SuperpodEscapeValveUsed(podInfo.Pod) {
+		if util.SuperpodEscapeValveUsed(sibling) {
 			escaped[superpodID]++
-			continue
+			return
 		}
 		scheduled = append(scheduled, topotree.ScheduledPod{
-			NodeID:     podInfo.NodeID,
+			NodeID:     node.Name,
 			SuperPodID: superpodID,
 			RackID:     util.GetNodeRackID(node),
 		})
-	}
+	})
 	return topotree.CollectOccupied(scheduled), escaped
 }
 
