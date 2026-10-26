@@ -124,6 +124,14 @@ type superpodOutcome struct {
 	// topology moved it, and OverrodeScore says whether that happened.
 	ScorePreferred string
 	OverrodeScore  bool
+	// MultiDomain says the workload's domain set holds more than one superpod,
+	// which under a performance-first policy is an incident rather than a
+	// scoring detail: traffic between the two halves leaves the fabric.
+	MultiDomain bool
+	// EscapedSiblings counts same-task pods that sit in a superpod outside the
+	// domain, having been placed through the per-Pod escape valve. They are left
+	// out of Domains on purpose, so this is the only place the split shows.
+	EscapedSiblings string
 	// Conflict describes a topology report that contradicts itself, empty when
 	// the annotations agree.
 	Conflict string
@@ -154,10 +162,43 @@ func (o superpodOutcome) EventSuffix() string {
 			msg += fmt.Sprintf(", topology outranked the %s score order (score preferred %s)", o.Policy, o.ScorePreferred)
 		}
 	}
+	if o.MultiDomain {
+		// A split service is not a placement preference. Say so in the one
+		// channel a user reads without turning on scheduler verbosity.
+		msg += fmt.Sprintf("; WARNING: task=%s spans %d superpod domains [%s] - traffic between them leaves the fabric",
+			o.TaskID, domainCount(o.Domains), o.Domains)
+	}
+	if o.EscapedSiblings != "" {
+		msg += fmt.Sprintf("; WARNING: %s of this task sits outside that domain, placed under the escape valve",
+			o.EscapedSiblings)
+	}
 	if o.Conflict != "" {
 		msg += "; WARNING: conflicting topology annotations: " + o.Conflict
 	}
 	return msg
+}
+
+// describeEscapedSiblings renders the same-task pods that hold a superpod the
+// gate does not count, as "2 pods in superpod 3, 1 pod in superpod 5". A pod
+// whose superpod is back inside the occupied set is not outside it any more, so
+// it drops out of the report.
+func describeEscapedSiblings(escaped map[int64]int, occ topotree.Occupied) string {
+	if len(escaped) == 0 {
+		return ""
+	}
+	ids := slices.Sorted(maps.Keys(escaped))
+	parts := make([]string, 0, len(ids))
+	for _, id := range ids {
+		if id < 0 || occ.SuperPodIDs[id] {
+			continue
+		}
+		noun := "pods"
+		if escaped[id] == 1 {
+			noun = "pod"
+		}
+		parts = append(parts, fmt.Sprintf("%d %s in superpod %d", escaped[id], noun, id))
+	}
+	return strings.Join(parts, ", ")
 }
 
 // domainsClause names the superpods the workload converges into. An empty set is
@@ -265,8 +306,9 @@ func (s *Scheduler) applySuperpodPolicy(scores *policy.NodeScoreList, pod *corev
 	taskID := util.GetTaskID(pod)
 	outcome.TaskID = taskID
 	var occupied topotree.Occupied
+	var escaped map[int64]int
 	if taskID != "" {
-		occupied = s.collectTaskOccupancy(taskID, pod.UID)
+		occupied, escaped = s.collectTaskOccupancy(taskID, pod.UID)
 	} else {
 		occupied = s.collectClusterOccupancy(pod.UID)
 	}
@@ -274,6 +316,9 @@ func (s *Scheduler) applySuperpodPolicy(scores *policy.NodeScoreList, pod *corev
 	// purely reactive gate would let two pods of one task open in two
 	// superpods at once. Seed a deterministic intent domain instead; once any
 	// sibling is bound the real occupancy above is non-empty and this is inert.
+	// A task whose every sibling came out through the escape valve reads as
+	// unplaced, which is the intended reading: the valve exempted those pods, so
+	// the domain is still the task's to choose.
 	if taskID != "" && len(occupied.SuperPodIDs) == 0 {
 		if intent := topotree.SyntheticFirstPodOccupied(taskID, entries); len(intent.SuperPodIDs) > 0 {
 			occupied = intent
@@ -281,6 +326,8 @@ func (s *Scheduler) applySuperpodPolicy(scores *policy.NodeScoreList, pod *corev
 		}
 	}
 	outcome.Domains = domainsString(occupied)
+	outcome.MultiDomain = len(occupied.SuperPodIDs) > 1
+	outcome.EscapedSiblings = describeEscapedSiblings(escaped, occupied)
 	hasRack := occupied.HasRackTier()
 	outcome.RackTier = hasRack
 
@@ -349,6 +396,8 @@ func (s *Scheduler) applySuperpodPolicy(scores *policy.NodeScoreList, pod *corev
 		"intentAnchor", outcome.IntentAnchor,
 		"capacitySpill", outcome.CapacitySpill,
 		"occupied", outcome.Domains,
+		"multiDomain", outcome.MultiDomain,
+		"escapedSiblings", outcome.EscapedSiblings,
 		"order", tiers,
 		"dropped", len(dropped),
 		"selected", outcome.SelectedNodeID,
@@ -432,6 +481,15 @@ func selectedForLog(scores []*policy.NodeScore) string {
 	return scores[len(scores)-1].NodeID
 }
 
+// domainCount reads a domainsString list back into a number, for the sentence
+// that has to say how many domains a split workload spans.
+func domainCount(domains string) int {
+	if domains == "" || domains == "none" {
+		return 0
+	}
+	return strings.Count(domains, ",") + 1
+}
+
 // domainsString lists the occupied superpods in a stable order, so a log line
 // or an event about the same cluster state reads the same twice.
 func domainsString(occ topotree.Occupied) string {
@@ -452,9 +510,18 @@ func domainsString(occ topotree.Occupied) string {
 // finished (Succeeded/Failed) are excluded too: their devices are released, so
 // counting their domain would keep a ghost superpod occupied and could gate
 // every live pod of the task into an empty domain.
-func (s *Scheduler) collectTaskOccupancy(taskID string, selfUID k8stypes.UID) topotree.Occupied {
+//
+// A sibling placed through the per-Pod escape valve is left out of the domain
+// set and returned in `escaped` instead. The valve is a one-pod exemption, so
+// letting its placement widen the domain would hand every later pod of the task
+// a licence to cross the fabric - and a ratchet has no way back, since the
+// widened set is recomputed from live placements every round. Leaving it out
+// means the task keeps the domain the gate actually converged it into, while
+// the pod that slipped out stays visible as a fact to report.
+func (s *Scheduler) collectTaskOccupancy(taskID string, selfUID k8stypes.UID) (topotree.Occupied, map[int64]int) {
 	podsInfo := s.podManager.ListPodsInfo()
 	scheduled := make([]topotree.ScheduledPod, 0, len(podsInfo))
+	escaped := make(map[int64]int)
 	for _, podInfo := range podsInfo {
 		if podInfo == nil || podInfo.Pod == nil || podInfo.UID == selfUID {
 			continue
@@ -469,13 +536,18 @@ func (s *Scheduler) collectTaskOccupancy(taskID string, selfUID k8stypes.UID) to
 		if node == nil {
 			continue
 		}
+		superpodID := util.GetNodeSuperPodID(node)
+		if util.SuperpodEscapeValveUsed(podInfo.Pod) {
+			escaped[superpodID]++
+			continue
+		}
 		scheduled = append(scheduled, topotree.ScheduledPod{
 			NodeID:     podInfo.NodeID,
-			SuperPodID: util.GetNodeSuperPodID(node),
+			SuperPodID: superpodID,
 			RackID:     util.GetNodeRackID(node),
 		})
 	}
-	return topotree.CollectOccupied(scheduled)
+	return topotree.CollectOccupied(scheduled), escaped
 }
 
 // collectClusterOccupancy records which superpods the cluster already has

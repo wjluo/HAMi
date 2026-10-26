@@ -879,3 +879,132 @@ func sameSet(got, want []string) bool {
 	}
 	return true
 }
+
+// B-1: the escape valve must save the pod that asked for it and nobody else.
+// The live scene is this exact shape (cicpoc, svc-d4): two siblings anchored in
+// superpod 1, one pod pushed into superpod 2 by a per-Pod spill annotation, and
+// a fourth pod of the same task that the operator did not opt out. Counting the
+// spilled placement into the domain turned [1] into [1,2] and left the strict
+// pod free to follow it across the fabric - permanently, since a ratchet has no
+// way back. Measured on superpod.6: "converged into superpod(s) [10,20]".
+func TestApplySuperpodPolicyEscapeValvePlacementDoesNotWidenTheDomain(t *testing.T) {
+	s := NewScheduler()
+	t.Cleanup(func() { close(s.stopCh) })
+
+	home := topoNode("node-home", "1", "1", "1")
+	foreign := topoNode("node-foreign", "2", "2", "2")
+	registerTopoNode(t, s, home)
+	registerTopoNode(t, s, foreign)
+	s.podManager.AddPod(taskPod("p-0", "svc-ratchet"), "node-home", device.PodDevices{})
+	s.podManager.AddPod(
+		podWithSuperpodPolicy("p-1", "svc-ratchet", util.SuperpodSchedulerPolicySpill.String()),
+		"node-foreign", device.PodDevices{})
+
+	// The foreign node scores best, so without the gate this pod lands there.
+	scores := scoreList(nodeScore(home, 5), nodeScore(foreign, 99))
+	dropped, outcome := s.applySuperpodPolicy(scores, taskPod("p-2", "svc-ratchet"))
+
+	if got := outcome.Domains; got != "1" {
+		t.Errorf("occupied = %q, want \"1\": an escape-valve placement must not widen the task's domain", got)
+	}
+	if want := []string{"node-foreign"}; !sameSet(droppedIDs(dropped), want) {
+		t.Errorf("dropped = %v, want %v gated out as foreign", droppedIDs(dropped), want)
+	}
+	if got := scores.NodeList[len(scores.NodeList)-1].NodeID; got != "node-home" {
+		t.Errorf("best node = %q, want node-home (order=%v)", got, orderOf(scores))
+	}
+}
+
+// The same rule for the disable valve, which is the one that leaves no trace of
+// its own: a pod placed with convergence switched off for it must still not
+// become the domain the rest of the task is held to.
+func TestApplySuperpodPolicyDisabledPlacementDoesNotWidenTheDomain(t *testing.T) {
+	s := NewScheduler()
+	t.Cleanup(func() { close(s.stopCh) })
+
+	home := topoNode("node-home", "1", "1", "1")
+	foreign := topoNode("node-foreign", "2", "2", "2")
+	registerTopoNode(t, s, home)
+	registerTopoNode(t, s, foreign)
+	s.podManager.AddPod(taskPod("p-0", "svc-ratchet"), "node-home", device.PodDevices{})
+	s.podManager.AddPod(
+		podWithSuperpodPolicy("p-1", "svc-ratchet", util.SuperpodSchedulerPolicyDisable.String()),
+		"node-foreign", device.PodDevices{})
+
+	scores := scoreList(nodeScore(home, 5), nodeScore(foreign, 99))
+	_, outcome := s.applySuperpodPolicy(scores, taskPod("p-2", "svc-ratchet"))
+
+	assert.Equal(t, outcome.Domains, "1")
+}
+
+// B-1's cost, stated as a test: the pod that was pushed out of the domain is
+// now alone there, and nothing in the domain set says so. The only honest
+// counterweight to a tighter gate is to name the orphan.
+func TestApplySuperpodPolicyNamesEscapedSiblingsOutsideTheDomain(t *testing.T) {
+	s := NewScheduler()
+	t.Cleanup(func() { close(s.stopCh) })
+
+	home := topoNode("node-home", "1", "1", "1")
+	foreign := topoNode("node-foreign", "2", "2", "2")
+	registerTopoNode(t, s, home)
+	registerTopoNode(t, s, foreign)
+	s.podManager.AddPod(taskPod("p-0", "svc-orphan"), "node-home", device.PodDevices{})
+	s.podManager.AddPod(
+		podWithSuperpodPolicy("p-1", "svc-orphan", util.SuperpodSchedulerPolicySpill.String()),
+		"node-foreign", device.PodDevices{})
+
+	scores := scoreList(nodeScore(home, 5), nodeScore(foreign, 99))
+	_, outcome := s.applySuperpodPolicy(scores, taskPod("p-2", "svc-orphan"))
+
+	msg := outcome.EventSuffix()
+	if !strings.Contains(msg, "outside") || !strings.Contains(msg, "superpod 2") {
+		t.Errorf("event suffix = %q, want it to warn that a task pod sits outside the domain in superpod 2", msg)
+	}
+}
+
+// B-2: a task whose domain really is several superpods is a cross-domain
+// service, which under "performance first" is an incident, not a low score.
+// This state is reachable from placements predating the rule above, or from a
+// cluster-wide default that opted every pod out at once.
+func TestApplySuperpodOutcomeWarnsOnMultiDomainService(t *testing.T) {
+	s := NewScheduler()
+	t.Cleanup(func() { close(s.stopCh) })
+
+	home := topoNode("node-home", "1", "1", "1")
+	other := topoNode("node-other", "2", "2", "2")
+	registerTopoNode(t, s, home)
+	registerTopoNode(t, s, other)
+	s.podManager.AddPod(taskPod("p-0", "svc-split"), "node-home", device.PodDevices{})
+	s.podManager.AddPod(taskPod("p-1", "svc-split"), "node-other", device.PodDevices{})
+
+	scores := scoreList(nodeScore(home, 5), nodeScore(other, 99))
+	_, outcome := s.applySuperpodPolicy(scores, taskPod("p-2", "svc-split"))
+
+	assert.Equal(t, outcome.Domains, "1,2")
+	if msg := outcome.EventSuffix(); !strings.Contains(msg, "WARNING") || !strings.Contains(msg, "2 superpod domains") {
+		t.Errorf("event suffix = %q, want a warning that the task spans two domains", msg)
+	}
+}
+
+// The exclusion reads the Pod's own annotation, never the cluster default: a
+// fleet configured with --superpod-scheduler-policy=spill is the operator's
+// decision to trade topology for delivery everywhere, and must not end up with
+// an empty occupancy (which would leave every task ungated).
+func TestApplySuperpodPolicyClusterWideSpillStillOccupies(t *testing.T) {
+	withSuperpodPolicy(t, util.SuperpodSchedulerPolicySpill.String())
+
+	s := NewScheduler()
+	t.Cleanup(func() { close(s.stopCh) })
+
+	foreign := topoNode("node-foreign", "2", "2", "2")
+	elsewhere := topoNode("node-elsewhere", "3", "3", "3")
+	registerTopoNode(t, s, foreign)
+	registerTopoNode(t, s, elsewhere)
+	s.podManager.AddPod(taskPod("p-0", "svc-default-spill"), "node-foreign", device.PodDevices{})
+
+	scores := scoreList(nodeScore(foreign, 5), nodeScore(elsewhere, 99))
+	dropped, outcome := s.applySuperpodPolicy(scores, taskPod("p-1", "svc-default-spill"))
+
+	assert.Equal(t, outcome.Domains, "2", "a sibling placed under the cluster default stays part of the domain")
+	assert.Equal(t, len(droppedIDs(dropped)), 1, "the third superpod is still foreign to this task")
+}

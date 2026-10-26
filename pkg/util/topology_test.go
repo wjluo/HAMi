@@ -245,3 +245,35 @@ func TestTopologyKeysAreTheCrossRepoContract(t *testing.T) {
 		}
 	}
 }
+
+// The escape valve is read from the Pod's own annotation and nothing else: it
+// is the record that this pod, not its whole fleet, was exempted from
+// convergence. A cluster default must never satisfy it, or an operator setting
+// --superpod-scheduler-policy=spill globally would empty every task's
+// occupancy and leave every workload ungated.
+func TestSuperpodEscapeValveUsed(t *testing.T) {
+	podWithAnnotation := func(value string, present bool) *corev1.Pod {
+		pod := &corev1.Pod{ObjectMeta: metav1.ObjectMeta{Name: "p", Namespace: "default"}}
+		if present {
+			pod.Annotations = map[string]string{SuperpodSchedulerPolicyAnnotationKey: value}
+		}
+		return pod
+	}
+	for _, tc := range []struct {
+		name    string
+		pod     *corev1.Pod
+		wantVal bool
+	}{
+		{"no annotation", podWithAnnotation("", false), false},
+		{"enable is not an escape", podWithAnnotation("enable", true), false},
+		{"spill is an escape", podWithAnnotation("spill", true), true},
+		{"disable is an escape", podWithAnnotation("disable", true), true},
+		{"surrounding spaces still read", podWithAnnotation(" spill ", true), true},
+		{"an unrecognized value opts out of nothing", podWithAnnotation("sp1ll", true), false},
+		{"nil pod", nil, false},
+	} {
+		if got := SuperpodEscapeValveUsed(tc.pod); got != tc.wantVal {
+			t.Errorf("%s: SuperpodEscapeValveUsed() = %v, want %v", tc.name, got, tc.wantVal)
+		}
+	}
+}

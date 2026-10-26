@@ -76,6 +76,29 @@ func taskID(pod *corev1.Pod) (string, string) {
 	return "", ""
 }
 
+// SuperpodEscapeValveUsed reports whether the pod asked, on its own object, to
+// be exempt from superpod domain convergence - the per-Pod disable or spill
+// annotation. It deliberately ignores config.SuperpodSchedulerPolicy: a
+// cluster-wide default is the operator opting the whole fleet out, which must
+// not empty every task's occupancy and leave all workloads ungated. Used to
+// decide whether a placement counted as topology-converged or slipped out
+// through the valve, so a valve that saved one pod does not move the rest of
+// its task.
+func SuperpodEscapeValveUsed(pod *corev1.Pod) bool {
+	if pod == nil {
+		return false
+	}
+	value, ok := pod.GetAnnotations()[SuperpodSchedulerPolicyAnnotationKey]
+	if !ok {
+		return false
+	}
+	switch SchedulerPolicyName(strings.TrimSpace(value)) {
+	case SuperpodSchedulerPolicyDisable, SuperpodSchedulerPolicySpill:
+		return true
+	}
+	return false
+}
+
 func topoID(node *corev1.Node, key string) int64 {
 	if node == nil {
 		return TopoIDInvalid
