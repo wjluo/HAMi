@@ -3,8 +3,8 @@
 # 为什么需要：compute.domain 用短名（运维好读、可做能力相等键），但已投产的
 #   topology.ascend.huawei.com/path 是交换机整串（附件打分层继续按它比 leaf）。
 #   两个来源必须能互验：节点手工写的 domain 若与 path 整串按本表解析出的 domain 不一致，
-#   调度器把该节点的 compute 平面降级为"未打标"，并在日志报 domain-mismatch ——
-#   宁可不加分也不误拒。
+#   调度器把该节点的 compute 平面记成 Conflict（日志 reason=domain-mismatch），该平面
+#   不贡献域号 —— 宁可不加分也不误拒。
 #
 # 现网整串本身自带 fabric 线索，例如
 #   leaf-SZPX06R1E10U39-DCN-DC1_FB13-LF46_A
@@ -27,7 +27,13 @@ data:
         match: "leaf-SZPX06R1G"
     # 未被任何 match 命中的 path 整串 → 报 domain-unmapped，该平面按"未打标"处理
 ---
-# 挂载与开关（chart values）：
-#   topology.domainRegistry.enabled = true
-#   topology.domainRegistry.name    = hami-topo-domain-registry
-# 关闭时调度器只用手工 domain 短名，不做互验（灰度初期建议先开着只报警、不改变调度结果）。
+# 生效方式（不是挂载）：调度器用 API 直接读它——命名空间取 $POD_NAMESPACE，
+#   取不到则 kube-system；对象名 hami-topo-domain-registry；键 domains.yaml。
+#   所以 chart 里不需要 volumeMounts，但 extender 的 ServiceAccount 必须能 get configmaps。
+# 读一次：本表一个进程只读一次（审计与 leaf 打分共用这一份）。改完本表要让 extender
+#   真的换新 Pod 才生效 —— `kubectl rollout restart deploy/hami-scheduler -n kube-system`
+#   再 patch 一次同样的镜像不产生新 Pod，看起来就像"表没生效"。
+# 上线顺序：先建本表，再开打分。没有本表时 compute 平面按"未打标"处理，
+#   leaf 打分整层不动（日志只留一行 [TopoSkip] reason=no-compute-plane），
+#   调度结果与打分层不存在时完全一致；权重本身另有旋钮 --topology-score-weight（默认 3.0，
+#   置 0 只静音排序、不关域门；要整层关掉用 --superpod-scheduler-policy=disable）。

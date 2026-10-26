@@ -138,6 +138,7 @@ spec:
             - --gpu-scheduler-policy={{ .Values.scheduler.defaultSchedulerPolicy.gpuSchedulerPolicy }}
             - --superpod-scheduler-policy={{ .Values.scheduler.defaultSchedulerPolicy.superpodSchedulerPolicy }}
             - --topology-service-plane-domain={{ .Values.scheduler.topology.servicePlaneDomain }}
+            - --topology-score-weight={{ .Values.scheduler.topology.scoreWeight }}
             - --force-overwrite-default-scheduler={{ .Values.scheduler.forceOverwriteDefaultScheduler}}
             - --device-config-file=/device-config.yaml
             - --leader-elect={{ .Values.scheduler.leaderElect }}

@@ -88,6 +88,15 @@ scheduler:
     # empty to require explicit service labelling. It is passed as the
     # `--topology-service-plane-domain` flag.
     servicePlaneDomain: cluster
+    # -- Weight the compute-leaf adjacency score is multiplied by, on the 0-10 band scale
+    # (SameNode 100, SameLeaf 80, CrossLeaf 0). It is a soft ordering applied to the nodes the
+    # device fit already accepted, before the domain gate cuts candidates, so it can reorder the
+    # survivors but never rescue a node that does not fit. 3.0 is the value tuned on the fleet
+    # running this scheme today; raise it only against measured throughput data, since it competes
+    # with the packing score. `0` turns the soft ordering off while leaving the domain gate in
+    # place; only `superpodSchedulerPolicy: disable` closes both. It is passed as the
+    # `--topology-score-weight` flag.
+    scoreWeight: 3.0
   # -- Address the scheduler serves Prometheus metrics on, as `[host]:port`. The chart also takes the port from it for the `metrics` container port.
   metricsBindAddress: ":9395"
   # -- Address of the pprof server, used only when `--profiling` is added to `scheduler.extender.extraArgs`. Keep it on loopback and reach it

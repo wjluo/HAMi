@@ -66,16 +66,42 @@ kubectl get node <node> -o jsonpath='{.metadata.labels}' | tr ',' '\n' | grep to
 kubectl get pods -l hami.io/taskid=job-20261026-qwen3-tp16 -o wide
 kubectl logs -n kube-system -c vgpu-scheduler-extender deployment/hami-scheduler | grep "TopoPrepare"
 
+# 看 leaf 软打分这一轮对每个候选说了什么（三带同名 SameNode/SameLeaf/CrossLeaf，需 -v=4）
+kubectl logs -n kube-system -c vgpu-scheduler-extender deployment/hami-scheduler | grep -E '\[TopoTrace\]' | tail
+# 期望: anchors>=1 且 adjacent>=1；reason=no-compute-plane 表示 11 号注册表没生效、这一层整层没动
+
 # 事件（Pod 级，最直观）
 kubectl describe pod <pod> | grep -A2 "superpod placement"
 ```
 
+上线顺序：`10-node-labels.sh` → `11-configmap-domain-registry.yaml` → 重启 extender → 再起任务。注册表一个进程只读一次，先起任务后建表的话，这个进程会一直按"没有计算面"打分，直到下次重启。
+
 ## 5. 出问题怎么退
 
+首选改 chart values（与镜像同一次上线），两个旋钮分别是：
+
+```
+scheduler.defaultSchedulerPolicy.superpodSchedulerPolicy: disable   # 打分层与域硬门一起关
+scheduler.topology.scoreWeight: 0                                   # 只关软排序，域硬门仍然生效
+```
+
+现场急停（来不及走 helm，直接改 Deployment；它是 extender 的启动参数，不是环境变量，改完要换新 Pod 才生效）：
+
 ```bash
-# 一条命令同时关掉打分层与硬门（回退红线用这个，不要动镜像）
-kubectl set env deployment/hami-scheduler -n kube-system ENABLE_TOPOLOGY=false
+# 一条 flag 同时关掉打分层与硬门（回退红线用这个，不要动镜像）
+kubectl -n kube-system patch deploy hami-scheduler --type=json -p='[{"op":"replace","path":"/spec/template/spec/containers/1/command/6","value":"--superpod-scheduler-policy=disable"}]'
+
+# 只松开软打分、保留域硬门（域还要，但排序回到原来的 binpack/spread）
+kubectl -n kube-system patch deploy hami-scheduler --type=json -p='[{"op":"add","path":"/spec/template/spec/containers/1/command/-","value":"--topology-score-weight=0"}]'
 
 # 只放开单个任务的拓扑约束（不动集群配置）
 kubectl annotate pod <pod> hami.io/superpod-scheduler-policy=disable --overwrite
+```
+
+下标以实际 spec 为准，先数一遍：`kubectl -n kube-system get deploy hami-scheduler -o jsonpath='{.spec.template.spec.containers[1].command}' | tr ',' '\n' | cat -n`（现网 `--superpod-scheduler-policy` 在第 7 项，即 jsonpatch 下标 6）。第二条是追加，重复执行会堆叠同名 flag（pflag 取最后一个），恢复时删掉而不是再追加一次。
+
+验证开关真的生效（关之前该 task 有 `[TopoPrepare]`/`[TopoTrace]`，关之后同一 task 新 Pod 两类日志都不该出现）：
+
+```bash
+kubectl -n kube-system logs -c vgpu-scheduler-extender deploy/hami-scheduler | grep -E "\[Topo(Prepare|Trace|Skip)\]" | tail
 ```
