@@ -130,13 +130,16 @@ const (
 	TopoServerIDAnnotationKey = "hami.io/serverid"
 )
 
-// Pod label identifying one inference service. Every Pod sharing a value,
-// including the prefill and decode halves of a PD-disaggregated service, is
-// converged into the same topology domain. The unprefixed spelling is read for
-// compatibility with workloads labelled for the Huawei volcano plugin.
+// Pod label identifying one scheduling task: a training job, or one inference
+// service including both its prefill and decode halves. Every Pod sharing a
+// value is converged into the same topology domain. The two inferserviceid
+// spellings are read only for workloads already deployed - the bare one for
+// jobs labelled the way Huawei's volcano plugin labels them - and are dropped
+// once nothing in the fleet hits them any more.
 const (
-	InferServiceIDLabel       = "hami.io/inferserviceid"
-	InferServiceIDLabelLegacy = "inferserviceid"
+	TaskIDLabel           = "hami.io/taskid"
+	TaskIDLabelLegacy     = "hami.io/inferserviceid"
+	TaskIDLabelLegacyBare = "inferserviceid"
 )
 
 func (s SchedulerPolicyName) String() string {

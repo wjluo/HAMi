@@ -37,7 +37,7 @@ import (
 // config.SuperpodSchedulerPolicy.
 //
 // The per-Pod escape valve exists because the cluster default is strict: one
-// wrong node annotation can leave every Pod of a service pending, and without
+// wrong node annotation can leave every Pod of a task pending, and without
 // this the only remedy is to turn convergence off for the whole cluster. An
 // annotation that does not name a supported policy is ignored with a warning,
 // so a typo cannot silently drop a workload that was meant to converge.
@@ -86,20 +86,22 @@ func superpodPolicySpillEnabled(pod *corev1.Pod) bool {
 //
 // HAMi's scheduler has no /score endpoint, so the tier ranking is invisible in
 // kube-scheduler configuration: without this, "why did my spread pod land on the
-// busy node" and "why is this service Pending" are only answerable from V(2)
+// busy node" and "why is this task Pending" are only answerable from V(2)
 // logs. The zero value means the policy changed nothing.
 type superpodOutcome struct {
 	// Policy is the node packing policy that produced the incoming order, kept
 	// so an override can name what it overrode.
 	Policy string
-	// InferServiceID is the service the pod names, empty for an unlabeled pod.
-	InferServiceID string
+	// TaskID is the task the pod names, empty for an unlabeled pod. One value
+	// covers both shapes HAMi converges: a training job, or an inference
+	// service whose prefill and decode halves must share a domain.
+	TaskID string
 	// Domains lists the superpods the workload converges into.
 	Domains string
 	// IntentAnchor marks a first pod whose domain was chosen deterministically
-	// (crc32 of the service id) rather than inherited from a bound sibling. It
-	// separates "this is where the service decided to open" from "this is where
-	// the service already sits" in the event and the decision log.
+	// (crc32 of the task id) rather than inherited from a bound sibling. It
+	// separates "this is where the task decided to open" from "this is where
+	// the task already sits" in the event and the decision log.
 	IntentAnchor bool
 	// RackTier reports whether the convergence is at rack granularity.
 	RackTier bool
@@ -114,7 +116,7 @@ type superpodOutcome struct {
 	// CapacitySpill names the occupied superpod this pod could not be placed
 	// in because no candidate in that domain fit it this round, under the
 	// spill policy. Empty unless a spill actually happened. It is the honest
-	// whole-service capacity signal the extender /filter layer can observe:
+	// whole-task capacity signal the extender /filter layer can observe:
 	// pre-sizing a domain from a replica count is invisible here, but "the
 	// occupied domain has run out of fitting candidates for this pod" is not.
 	CapacitySpill string
@@ -159,7 +161,7 @@ func (o superpodOutcome) EventSuffix() string {
 }
 
 // domainsClause names the superpods the workload converges into. An empty set is
-// not a domain, so the first pod of a service reads "has no placement yet"
+// not a domain, so the first pod of a task reads "has no placement yet"
 // rather than claiming it converged into nothing.
 func (o superpodOutcome) domainsClause() string {
 	occupied := o.Domains != "" && o.Domains != "none"
@@ -168,18 +170,18 @@ func (o superpodOutcome) domainsClause() string {
 		// converged into would contradict the node the placement line names.
 		// Say what happened instead: the domain was full for this pod and the
 		// spill policy traded topology for delivery.
-		return fmt.Sprintf("service=%s domain [%s] had no fitting candidate this round, spilled to superpod=%d under the spill policy", o.InferServiceID, o.CapacitySpill, o.SuperPodID)
+		return fmt.Sprintf("task=%s domain [%s] had no fitting candidate this round, spilled to superpod=%d under the spill policy", o.TaskID, o.CapacitySpill, o.SuperPodID)
 	}
-	if o.InferServiceID != "" {
+	if o.TaskID != "" {
 		if o.IntentAnchor {
 			// Nothing is bound yet; naming the target as an intent keeps a
 			// first-pod placement from being read as an existing occupancy.
-			return fmt.Sprintf("service=%s opening superpod(s) [%s] by deterministic intent, no sibling bound yet", o.InferServiceID, o.Domains)
+			return fmt.Sprintf("task=%s opening superpod(s) [%s] by deterministic intent, no sibling bound yet", o.TaskID, o.Domains)
 		}
 		if !occupied {
-			return fmt.Sprintf("service=%s has no placement in any superpod yet", o.InferServiceID)
+			return fmt.Sprintf("task=%s has no placement in any superpod yet", o.TaskID)
 		}
-		return fmt.Sprintf("service=%s converged into superpod(s) [%s]", o.InferServiceID, o.Domains)
+		return fmt.Sprintf("task=%s converged into superpod(s) [%s]", o.TaskID, o.Domains)
 	}
 	if !occupied {
 		return "no superpod is occupied yet"
@@ -196,8 +198,8 @@ func (o superpodOutcome) domainsClause() string {
 // an empty result means the candidate list still holds every node. The outcome
 // describes the decision itself and is returned even when nothing was dropped,
 // because a placement that was only re-ordered is the case that needs an
-// explanation most. A pod is only ever gated when it names the inference
-// service it belongs to: without that label there is no statement of which
+// explanation most. A pod is only ever gated when it names the task it
+// belongs to: without that label there is no statement of which
 // pods must share a domain, so the policy orders such a pod towards the
 // superpods already in use instead of cutting the rest away. Clusters whose
 // nodes carry no topology annotations, and a workload nothing has placed yet,
@@ -260,20 +262,20 @@ func (s *Scheduler) applySuperpodPolicy(scores *policy.NodeScoreList, pod *corev
 		})
 	}
 
-	inferServiceID := util.GetInferServiceID(pod)
-	outcome.InferServiceID = inferServiceID
+	taskID := util.GetTaskID(pod)
+	outcome.TaskID = taskID
 	var occupied topotree.Occupied
-	if inferServiceID != "" {
-		occupied = s.collectInferServiceOccupancy(inferServiceID, pod.UID)
+	if taskID != "" {
+		occupied = s.collectTaskOccupancy(taskID, pod.UID)
 	} else {
 		occupied = s.collectClusterOccupancy(pod.UID)
 	}
-	// The first pod of a labelled service has no bound sibling to follow, so a
-	// purely reactive gate would let two pods of one service open in two
+	// The first pod of a labelled task has no bound sibling to follow, so a
+	// purely reactive gate would let two pods of one task open in two
 	// superpods at once. Seed a deterministic intent domain instead; once any
 	// sibling is bound the real occupancy above is non-empty and this is inert.
-	if inferServiceID != "" && len(occupied.SuperPodIDs) == 0 {
-		if intent := topotree.SyntheticFirstPodOccupied(inferServiceID, entries); len(intent.SuperPodIDs) > 0 {
+	if taskID != "" && len(occupied.SuperPodIDs) == 0 {
+		if intent := topotree.SyntheticFirstPodOccupied(taskID, entries); len(intent.SuperPodIDs) > 0 {
 			occupied = intent
 			outcome.IntentAnchor = true
 		}
@@ -283,7 +285,7 @@ func (s *Scheduler) applySuperpodPolicy(scores *policy.NodeScoreList, pod *corev
 	outcome.RackTier = hasRack
 
 	var dropped []topotree.Entry
-	if inferServiceID != "" {
+	if taskID != "" {
 		var kept []topotree.Entry
 		kept, dropped = topotree.Gate(entries, occupied)
 		switch {
@@ -337,7 +339,12 @@ func (s *Scheduler) applySuperpodPolicy(scores *policy.NodeScoreList, pod *corev
 
 	klog.V(2).InfoS("Applied superpod scheduling policy",
 		"pod", klog.KObj(pod),
-		"inferServiceID", inferServiceID,
+		"task", taskID,
+		// The deprecated key keeps the fleet's existing log greps working for
+		// one release; taskLabel says which spelling a workload still writes,
+		// which is the evidence for dropping the legacy readers.
+		"taskLabel", util.TaskIDLabelUsed(pod),
+		"service", taskID,
 		"rackTier", hasRack,
 		"intentAnchor", outcome.IntentAnchor,
 		"capacitySpill", outcome.CapacitySpill,
@@ -372,7 +379,7 @@ type serverReport struct {
 // than one superpod. A machine lives in one superpod, so two nodes disagreeing
 // about one server index mean at least one annotation is stale or was set by
 // hand. The scheduler cannot tell which is right, and must not guess by
-// silently picking one domain, but naming the pair turns "why is this service
+// silently picking one domain, but naming the pair turns "why is this task
 // stuck in superpod 4" into a one-line answer.
 //
 // Nodes missing either level are skipped: an absent server id says nothing, and
@@ -439,13 +446,13 @@ func domainsString(occ topotree.Occupied) string {
 	return strings.Join(out, ",")
 }
 
-// collectInferServiceOccupancy records which superpods and racks the given
-// inference service already holds. The pod being scheduled is excluded so a
+// collectTaskOccupancy records which superpods and racks the given
+// task already holds. The pod being scheduled is excluded so a
 // re-queued pod is not pinned to the superpod it is leaving. Pods that have
 // finished (Succeeded/Failed) are excluded too: their devices are released, so
 // counting their domain would keep a ghost superpod occupied and could gate
-// every live pod of the service into an empty domain.
-func (s *Scheduler) collectInferServiceOccupancy(inferServiceID string, selfUID k8stypes.UID) topotree.Occupied {
+// every live pod of the task into an empty domain.
+func (s *Scheduler) collectTaskOccupancy(taskID string, selfUID k8stypes.UID) topotree.Occupied {
 	podsInfo := s.podManager.ListPodsInfo()
 	scheduled := make([]topotree.ScheduledPod, 0, len(podsInfo))
 	for _, podInfo := range podsInfo {
@@ -455,7 +462,7 @@ func (s *Scheduler) collectInferServiceOccupancy(inferServiceID string, selfUID 
 		if isPodFinished(podInfo.Pod) {
 			continue
 		}
-		if util.GetInferServiceID(podInfo.Pod) != inferServiceID {
+		if util.GetTaskID(podInfo.Pod) != taskID {
 			continue
 		}
 		node := s.topologyNode(podInfo.NodeID)
@@ -473,7 +480,7 @@ func (s *Scheduler) collectInferServiceOccupancy(inferServiceID string, selfUID 
 
 // collectClusterOccupancy records which superpods the cluster already has
 // devices placed in. Unlabeled compute pods use it to keep opening new
-// domains, which is the only convergence a pod with no stated service can be
+// domains, which is the only convergence a pod with no stated task can be
 // held to.
 func (s *Scheduler) collectClusterOccupancy(selfUID k8stypes.UID) topotree.Occupied {
 	podsInfo := s.podManager.ListPodsInfo()

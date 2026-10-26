@@ -151,38 +151,79 @@ func TestGetNodeServerID(t *testing.T) {
 	}
 }
 
-func TestGetInferServiceID(t *testing.T) {
+// A workload's identity is a task: the platform issues one id per training or
+// inference task, and every Pod carrying it converges into the same topology
+// domain. The earlier spelling named only one of those two shapes, so the
+// reader now takes taskid first and falls back through the two older spellings
+// for workloads already deployed.
+func TestGetTaskID(t *testing.T) {
 	tests := []struct {
 		name   string
 		labels map[string]string
 		want   string
 	}{
-		{"standard prefixed label wins", map[string]string{
-			InferServiceIDLabel:       "svc-a",
-			InferServiceIDLabelLegacy: "svc-legacy",
-		}, "svc-a"},
-		{"legacy label honoured alone", map[string]string{
-			InferServiceIDLabelLegacy: "svc-legacy",
-		}, "svc-legacy"},
-		{"prefixed empty falls through to legacy", map[string]string{
-			InferServiceIDLabel:       "",
-			InferServiceIDLabelLegacy: "svc-legacy",
-		}, "svc-legacy"},
-		{"no labels means not an inference service pod", nil, ""},
+		{"taskid wins over every legacy spelling", map[string]string{
+			TaskIDLabel:           "task-a",
+			TaskIDLabelLegacy:     "svc-prefixed",
+			TaskIDLabelLegacyBare: "svc-bare",
+		}, "task-a"},
+		{"prefixed inferserviceid honoured when taskid is absent", map[string]string{
+			TaskIDLabelLegacy: "svc-prefixed",
+		}, "svc-prefixed"},
+		{"bare inferserviceid honoured last", map[string]string{
+			TaskIDLabelLegacyBare: "svc-bare",
+		}, "svc-bare"},
+		{"empty taskid falls through", map[string]string{
+			TaskIDLabel:           "",
+			TaskIDLabelLegacyBare: "svc-bare",
+		}, "svc-bare"},
+		{"no labels means the pod takes no part in convergence", nil, ""},
 		{"unrelated labels", map[string]string{"app": "mindie"}, ""},
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
-			if got := GetInferServiceID(podWithLabels(tc.labels)); got != tc.want {
-				t.Errorf("GetInferServiceID() = %q, want %q", got, tc.want)
+			if got := GetTaskID(podWithLabels(tc.labels)); got != tc.want {
+				t.Errorf("GetTaskID() = %q, want %q", got, tc.want)
 			}
 		})
 	}
 }
 
-func TestGetInferServiceIDNilPod(t *testing.T) {
-	if got := GetInferServiceID(nil); got != "" {
-		t.Errorf("GetInferServiceID(nil) = %q, want empty", got)
+func TestGetTaskIDNilPod(t *testing.T) {
+	if got := GetTaskID(nil); got != "" {
+		t.Errorf("GetTaskID(nil) = %q, want empty", got)
+	}
+}
+
+// The deprecation window is only closable if the scheduler can say which
+// spelling a workload still writes, so the reader reports the key it used.
+func TestTaskIDLabelUsed(t *testing.T) {
+	tests := []struct {
+		name   string
+		labels map[string]string
+		want   string
+	}{
+		{"current spelling", map[string]string{TaskIDLabel: "task-a"}, TaskIDLabel},
+		{"legacy prefixed spelling", map[string]string{TaskIDLabelLegacy: "svc-a"}, TaskIDLabelLegacy},
+		{"legacy bare spelling", map[string]string{TaskIDLabelLegacyBare: "svc-a"}, TaskIDLabelLegacyBare},
+		{"precedence names the key that answered", map[string]string{
+			TaskIDLabel: "task-a", TaskIDLabelLegacy: "svc-a", TaskIDLabelLegacyBare: "svc-b",
+		}, TaskIDLabel},
+		{"nothing to report", nil, ""},
+		{"labels but no task", map[string]string{"app": "mindie"}, ""},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := TaskIDLabelUsed(podWithLabels(tc.labels)); got != tc.want {
+				t.Errorf("TaskIDLabelUsed() = %q, want %q", got, tc.want)
+			}
+		})
+	}
+}
+
+func TestTaskIDLabelUsedNilPod(t *testing.T) {
+	if got := TaskIDLabelUsed(nil); got != "" {
+		t.Errorf("TaskIDLabelUsed(nil) = %q, want empty", got)
 	}
 }
 
@@ -194,8 +235,9 @@ func TestTopologyKeysAreTheCrossRepoContract(t *testing.T) {
 		TopoSuperPodIDAnnotationKey: "hami.io/superpodid",
 		TopoRackIDAnnotationKey:     "hami.io/rackid",
 		TopoServerIDAnnotationKey:   "hami.io/serverid",
-		InferServiceIDLabel:         "hami.io/inferserviceid",
-		InferServiceIDLabelLegacy:   "inferserviceid",
+		TaskIDLabel:                 "hami.io/taskid",
+		TaskIDLabelLegacy:           "hami.io/inferserviceid",
+		TaskIDLabelLegacyBare:       "inferserviceid",
 	}
 	for got, expected := range want {
 		if got != expected {

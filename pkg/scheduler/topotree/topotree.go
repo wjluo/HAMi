@@ -15,7 +15,7 @@ limitations under the License.
 */
 
 // Package topotree orders scheduling candidates by superpod topology, so that
-// the Pods of one inference service converge into the same superpod - and, when
+// the Pods of one task converge into the same superpod - and, when
 // the chip reports a rack tier, into the same rack.
 //
 // It is deliberately free of device and node-cache dependencies: callers pass
@@ -42,7 +42,7 @@ type Entry struct {
 	Score      float64
 }
 
-// ScheduledPod is a pod of the same inference service that already occupies a
+// ScheduledPod is a pod of the same task that already occupies a
 // node. Callers resolve the topology ids; this package only groups them.
 type ScheduledPod struct {
 	NodeID     string
@@ -50,7 +50,7 @@ type ScheduledPod struct {
 	RackID     int64
 }
 
-// Occupied records the topology domains already taken by one inference service.
+// Occupied records the topology domains already taken by one task.
 type Occupied struct {
 	SuperPodIDs map[int64]bool
 	RackKeys    map[string]bool
@@ -73,7 +73,7 @@ func RackKey(superPodID, rackID int64) string {
 	return strconv.FormatInt(superPodID, 10) + ":" + strconv.FormatInt(rackID, 10)
 }
 
-// CollectOccupied builds the occupancy sets of one inference service. Pods on
+// CollectOccupied builds the occupancy sets of one task. Pods on
 // nodes without usable topology are ignored, so a broken annotation never
 // constrains the schedule.
 func CollectOccupied(pods []ScheduledPod) Occupied {

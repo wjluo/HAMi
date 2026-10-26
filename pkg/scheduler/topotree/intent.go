@@ -21,14 +21,14 @@ import (
 	"sort"
 )
 
-// SyntheticFirstPodOccupied gives the first pod of an inference service a
+// SyntheticFirstPodOccupied gives the first pod of a task a
 // deterministic home before any sibling has bound.
 //
 // A reactive anchor - "the superpod where the first pod happened to bind" -
-// cannot hold concurrent first pods of one service: two pods evaluated in the
+// cannot hold concurrent first pods of one task: two pods evaluated in the
 // same round, with nothing occupied yet, each keep their own best node and the
-// service opens in two superpods at once. This makes the choice a pure function
-// of the service id and the candidate superpods, so every pod of the service
+// task opens in two superpods at once. This makes the choice a pure function
+// of the task id and the candidate superpods, so every pod of the task
 // derives the same target with no shared state and no coordination.
 //
 // The result is fed straight back through Gate/Classify/Reorder as if that
@@ -38,11 +38,11 @@ import (
 // never drops a node for lacking an annotation.
 //
 // It returns an empty Occupied - so the caller keeps its current inert-gate
-// behaviour - when there is nothing to anchor on: no service id, or no
+// behaviour - when there is nothing to anchor on: no task id, or no
 // candidate node carrying a usable superpod id.
-func SyntheticFirstPodOccupied(serviceID string, candidates []Entry) Occupied {
+func SyntheticFirstPodOccupied(taskID string, candidates []Entry) Occupied {
 	empty := Occupied{SuperPodIDs: map[int64]bool{}, RackKeys: map[string]bool{}}
-	if serviceID == "" {
+	if taskID == "" {
 		return empty
 	}
 	// The target is drawn from the superpods actually present among the
@@ -53,13 +53,13 @@ func SyntheticFirstPodOccupied(serviceID string, candidates []Entry) Occupied {
 	if len(sps) == 0 {
 		return empty
 	}
-	target := sps[int(crc32String(serviceID))%len(sps)]
+	target := sps[int(crc32String(taskID))%len(sps)]
 	occ := Occupied{SuperPodIDs: map[int64]bool{target: true}, RackKeys: map[string]bool{}}
 	// Pick a rack the same way only when this superpod's candidates carry one,
 	// so a two-tier chip (no rack reported) stays two-tier and never invents a
 	// rack the hardware does not have.
 	if racks := sortedRackIDsIn(candidates, target); len(racks) > 0 {
-		targetRack := racks[int(crc32String(serviceID+"#rack"))%len(racks)]
+		targetRack := racks[int(crc32String(taskID+"#rack"))%len(racks)]
 		occ.RackKeys[RackKey(target, targetRack)] = true
 	}
 	return occ

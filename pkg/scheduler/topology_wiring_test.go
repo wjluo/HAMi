@@ -69,10 +69,10 @@ func topoGPUDevice(id string) device.DeviceInfo {
 	}
 }
 
-func topoGPUPod(name, uid, serviceID string, mem, cores int64) *corev1.Pod {
+func topoGPUPod(name, uid, taskID string, mem, cores int64) *corev1.Pod {
 	labels := map[string]string{}
-	if serviceID != "" {
-		labels[util.InferServiceIDLabel] = serviceID
+	if taskID != "" {
+		labels[util.TaskIDLabel] = taskID
 	}
 	return &corev1.Pod{
 		ObjectMeta: metav1.ObjectMeta{

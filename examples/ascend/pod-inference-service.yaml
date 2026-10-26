@@ -1,6 +1,6 @@
 # PD-disaggregated serving that converges into one superpod.
 #
-# Both pods carry the same hami.io/inferserviceid, so HAMi places the decode
+# Both pods carry the same hami.io/taskid, so HAMi places the decode
 # pod next to the prefill pod: same rack when the chip reports one, otherwise
 # the same superpod. See docs/develop/superpod-topology-affinity.md for how the
 # node annotations get there.
@@ -9,7 +9,7 @@ kind: Pod
 metadata:
   name: mindie-prefill
   labels:
-    hami.io/inferserviceid: llama-service-001
+    hami.io/taskid: llama-service-001
 spec:
   containers:
     - name: prefill
@@ -25,7 +25,7 @@ kind: Pod
 metadata:
   name: mindie-decode
   labels:
-    hami.io/inferserviceid: llama-service-001
+    hami.io/taskid: llama-service-001
 spec:
   containers:
     - name: decode

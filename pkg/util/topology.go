@@ -49,17 +49,31 @@ func GetNodeServerID(node *corev1.Node) int64 {
 	return topoID(node, TopoServerIDAnnotationKey)
 }
 
-// GetInferServiceID returns the inference service the pod belongs to. An empty
-// result means the pod takes no part in topology convergence and is scheduled
-// exactly as before.
-func GetInferServiceID(pod *corev1.Pod) string {
+// GetTaskID returns the task the pod belongs to. An empty result means the pod
+// takes no part in topology convergence and is scheduled exactly as before.
+func GetTaskID(pod *corev1.Pod) string {
+	id, _ := taskID(pod)
+	return id
+}
+
+// TaskIDLabelUsed names the label that supplied the task id, so the
+// deprecation window can be closed on evidence rather than on a guess about
+// what the cluster still writes. Empty means the pod names no task.
+func TaskIDLabelUsed(pod *corev1.Pod) string {
+	_, key := taskID(pod)
+	return key
+}
+
+func taskID(pod *corev1.Pod) (string, string) {
 	if pod == nil {
-		return ""
+		return "", ""
 	}
-	if id := pod.Labels[InferServiceIDLabel]; id != "" {
-		return id
+	for _, key := range []string{TaskIDLabel, TaskIDLabelLegacy, TaskIDLabelLegacyBare} {
+		if id := pod.Labels[key]; id != "" {
+			return id, key
+		}
 	}
-	return pod.Labels[InferServiceIDLabelLegacy]
+	return "", ""
 }
 
 func topoID(node *corev1.Node, key string) int64 {
