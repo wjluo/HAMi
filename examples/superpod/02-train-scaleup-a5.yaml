@@ -1,0 +1,35 @@
+# 类三 · A5 超节点内部训练（scale-up）
+#
+# 用途：整个作业必须待在一个超节点内部（走 UB/LQC 总线，不出超节点）。
+# 注意：独立 A5 超节点没有计算面上联，跨超节点只剩 25GE 业务面 —— 所以这里写 scaleup，
+#       调度器会把同 taskid 的 Pod 锁在同一个超节点；单超节点装不下时直接 Pending 并给出
+#       "需求 N 卡 > 域容量 M" 的事件，而不是悄悄把作业劈成两半走 25GE。
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: a5-hypernode-train
+  namespace: npu-test
+  labels:
+    type: train
+    hami.io/taskid: a5-hypernode-train
+spec:
+  replicas: 2                 # 2 Pod × 4 卡 = 8 卡，必须落在同一超节点内
+  selector:
+    matchLabels:
+      app: a5-hypernode-train
+  template:
+    metadata:
+      labels:
+        app: a5-hypernode-train
+        type: train
+        hami.io/taskid: a5-hypernode-train
+      annotations:
+        hami.io/fabric-requirement: "scaleup"
+    spec:
+      containers:
+        - name: trainer
+          image: ascendhub.huawei.com/public-ascendhub/ascend-mindspore:23.0.RC3-centos7
+          command: ["bash", "-c", "sleep 86400"]
+          resources:
+            limits:
+              huawei.com/Ascend950DT: 4

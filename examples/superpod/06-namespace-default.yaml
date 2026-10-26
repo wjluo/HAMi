@@ -1,0 +1,27 @@
+# Namespace 级兜底 · 业务平台还没下发 fabric-requirement 之前用
+#
+# 现状：fabric-requirement 由极算平台（高开/低开）在任务模板里注入。平台改造前，
+#       可以给整个 namespace 打默认值，效果等同于该 ns 下所有 Pod 都带这个注解。
+# 优先级：Pod 注解 > Namespace 默认值 > 缺省 any（不设能力门，与今天行为一致）。
+#
+# 两个标签：
+#   topology.hami.io/enabled=true          —— 该 namespace 纳入拓扑调度范围（灰度单位）
+#   topology.hami.io/fabric-requirement    —— 该 namespace 的默认平面需求
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: gk-namespace
+  labels:
+    topology.hami.io/enabled: "true"
+    topology.hami.io/fabric-requirement: "compute"   # 高开训练默认必须同计算面域
+---
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: llm-train-platform
+  labels:
+    topology.hami.io/enabled: "true"
+    topology.hami.io/fabric-requirement: "scaleup"   # 该 ns 的作业默认锁在单个超节点内
+---
+# 兜底灰度总闸（集群级，一条命令回退，同时关掉打分层与硬门）：
+#   kubectl set env deployment/hami-scheduler -n kube-system ENABLE_TOPOLOGY=false

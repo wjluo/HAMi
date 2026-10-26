@@ -1,0 +1,39 @@
+# 类二 · A3 传统 RDMA 高网（计算面/参数面）跨机训练
+#
+# 用途：多 Pod 分布式训练，Pod 之间必须走 spine+leaf RDMA 高网通信。
+# 关键两行：
+#   label hami.io/taskid          —— 同一任务所有 Pod 同值，调度器据此收拢到同一个 compute.domain
+#   annotation hami.io/fabric-requirement=compute —— 硬需求：落到没有计算面的节点会被拒绝并给出事件
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: a3-paramnet-train
+  namespace: npu-test
+  labels:
+    type: train                       # 训练类任务标识（拓扑调度灰度链按此识别）
+    hami.io/taskid: a3-paramnet-train # 服务/任务标识：同一任务的所有 Pod 用同一个值
+spec:
+  replicas: 4                         # 4 个 Pod 都要落在同一个 compute.domain 内
+  selector:
+    matchLabels:
+      app: a3-paramnet-train
+  template:
+    metadata:
+      labels:
+        app: a3-paramnet-train
+        type: train
+        hami.io/taskid: a3-paramnet-train
+      annotations:
+        hami.io/fabric-requirement: "compute"
+    spec:
+      containers:
+        - name: trainer
+          image: ascendhub.huawei.com/public-ascendhub/ascend-mindspore:23.0.RC3-centos7
+          command: ["bash", "-c", "sleep 86400"]
+          resources:
+            limits:
+              huawei.com/Ascend950DT: 1     # 单 Pod 1 卡；按节点实际上报的设备名替换
+---
+# 校验：4 个 Pod 应落在同一 compute.domain 的节点上，且事件里出现同一个 domain 短名
+#   kubectl get pods -n npu-test -l hami.io/taskid=a3-paramnet-train -o wide
+#   kubectl logs -n kube-system -c vgpu-scheduler-extender deployment/hami-scheduler | grep "TopoPrepare"

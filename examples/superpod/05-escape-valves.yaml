@@ -1,0 +1,57 @@
+# 逃生阀 · 单任务级放宽（不动集群配置）
+#
+# hami.io/superpod-scheduler-policy 三个取值：
+#   enable  （缺省）严格：已锚定域装不下就 Pending，并给出"域内本轮无可放候选"的事件
+#   spill          域满时允许溢出到别的域，但溢出源与被溢目标仍受 fabric-requirement 约束：
+#                  requirement=compute 不会溢到另一个 compute.domain（物理隔离=不通）
+#                  requirement=scaleup 不会溢出超节点
+#   disable        本 Pod 完全不参与拓扑调度（排查问题、抢资源时用）
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: train-spill-on-full
+  namespace: npu-test
+  labels:
+    type: train
+    hami.io/taskid: train-spill-on-full
+spec:
+  replicas: 2
+  selector:
+    matchLabels:
+      app: train-spill-on-full
+  template:
+    metadata:
+      labels:
+        app: train-spill-on-full
+        type: train
+        hami.io/taskid: train-spill-on-full
+      annotations:
+        hami.io/fabric-requirement: "compute"
+        hami.io/superpod-scheduler-policy: "spill"   # 域满允许外溢，但仍在同一计算面域内
+    spec:
+      containers:
+        - name: trainer
+          image: ascendhub.huawei.com/public-ascendhub/ascend-mindspore:23.0.RC3-centos7
+          command: ["bash", "-c", "sleep 86400"]
+          resources:
+            limits:
+              huawei.com/Ascend950DT: 4
+---
+# 排障用：临时让这个 Pod 完全按原生 HAMi 调度（验证"是不是拓扑造成的 Pending"）
+apiVersion: v1
+kind: Pod
+metadata:
+  name: train-no-topology
+  labels:
+    type: train
+    hami.io/taskid: train-no-topology
+  annotations:
+    hami.io/superpod-scheduler-policy: "disable"
+spec:
+  containers:
+    - name: trainer
+      image: ascendhub.huawei.com/public-ascendhub/ascend-mindspore:23.0.RC3-centos7
+      command: ["bash", "-c", "sleep 86400"]
+      resources:
+        limits:
+          huawei.com/Ascend950DT: 4

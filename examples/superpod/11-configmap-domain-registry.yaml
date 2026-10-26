@@ -1,0 +1,33 @@
+# 计算面 domain 注册表 · 短名 ↔ 现网 leaf-path 整串
+#
+# 为什么需要：compute.domain 用短名（运维好读、可做能力相等键），但已投产的
+#   topology.ascend.huawei.com/path 是交换机整串（附件打分层继续按它比 leaf）。
+#   两个来源必须能互验：节点手工写的 domain 若与 path 整串按本表解析出的 domain 不一致，
+#   调度器把该节点的 compute 平面降级为"未打标"，并在日志报 domain-mismatch ——
+#   宁可不加分也不误拒。
+#
+# 现网整串本身自带 fabric 线索，例如
+#   leaf-SZPX06R1E10U39-DCN-DC1_FB13-LF46_A
+#         └─ 机柜/位置 ─────┘ └─域─┘ └交换─┘ └leaf┘
+# 所以 match 用"前缀包含"式匹配即可，不需要重新抄一遍拓扑。
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: hami-topo-domain-registry
+  namespace: kube-system
+data:
+  domains.yaml: |
+    plane: compute
+    domains:
+      - name: PF-SZ01          # 类二：A3 传统 RDMA 高网（参数面）
+        match: "-DCN-DC1_FB13-LF4"
+      - name: SO-SET1          # 类四：A5 scale-out 第 1 套
+        match: "leaf-SZPX06R1F"
+      - name: SO-SET2          # 类四：A5 scale-out 第 2 套
+        match: "leaf-SZPX06R1G"
+    # 未被任何 match 命中的 path 整串 → 报 domain-unmapped，该平面按"未打标"处理
+---
+# 挂载与开关（chart values）：
+#   topology.domainRegistry.enabled = true
+#   topology.domainRegistry.name    = hami-topo-domain-registry
+# 关闭时调度器只用手工 domain 短名，不做互验（灰度初期建议先开着只报警、不改变调度结果）。
