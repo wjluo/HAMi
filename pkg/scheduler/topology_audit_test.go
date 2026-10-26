@@ -26,6 +26,7 @@ import (
 	"gotest.tools/v3/assert"
 
 	"github.com/Project-HAMi/HAMi/pkg/topology/plane"
+	"github.com/Project-HAMi/HAMi/pkg/util"
 )
 
 func cmWithRegistry(data map[string]string) *corev1.ConfigMap {
@@ -86,6 +87,22 @@ func TestReportSuperpodTopologyIsAOneShotAudit(t *testing.T) {
 
 	_, again := s.reportSuperpodTopology(nodes)
 	assert.Assert(t, !again, "a 15 second register loop must not re-log the same audit every pass")
+}
+
+// The audit is the instrument an operator uses to decide whether it is safe to
+// turn the policy on, so the kill switch must not silence it. Coupling them
+// would mean the only way to check a cluster's labelling is to start gating on
+// it.
+func TestTopologyAuditRunsWhileThePolicyIsDisabled(t *testing.T) {
+	t.Setenv("POD_NAMESPACE", "kube-system")
+	withSuperpodPolicy(t, util.SuperpodSchedulerPolicyDisable.String())
+
+	s := &Scheduler{kubeClient: fake.NewSimpleClientset()}
+	_, reported := s.reportSuperpodTopology([]*corev1.Node{
+		planeNode(map[string]string{"hami.io/topo.compute.domain": "SO-SET1", "hami.io/topo.compute.leaf": "LF49_A"}),
+	})
+
+	assert.Assert(t, reported)
 }
 
 func planeNode(labels map[string]string) *corev1.Node {

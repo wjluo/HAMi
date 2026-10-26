@@ -222,11 +222,43 @@ func TestApplySuperpodPolicyDisabled(t *testing.T) {
 	s.podManager.AddPod(taskPod("p-0", "svc-g"), "node-in-sp", device.PodDevices{})
 
 	scores := scoreList(nodeScore(inSP, 5), nodeScore(elsewhere, 99))
-	dropped, _ := s.applySuperpodPolicy(scores, taskPod("p-1", "svc-g"))
+	dropped, outcome := s.applySuperpodPolicy(scores, taskPod("p-1", "svc-g"))
 
 	if dropped != nil {
 		t.Errorf("dropped = %v, want none", droppedIDs(dropped))
 	}
+	if want := []string{"node-in-sp", "node-elsewhere"}; !equal(orderOf(scores), want) {
+		t.Errorf("order = %v, want the incoming score order (binpack decides)", want)
+	}
+	// A user who turned the feature off must not keep reading its events. An
+	// empty outcome is also what the caller tests, so anything left in it - a
+	// policy name, a task id - would invite a second, half-on code path.
+	if outcome != (superpodOutcome{}) {
+		t.Errorf("outcome = %+v, want the zero value with nothing to report", outcome)
+	}
+	if msg := outcome.EventSuffix(); msg != "" {
+		t.Errorf("event suffix = %q, want no event text under a disabled policy", msg)
+	}
+}
+
+// The per-Pod escape valve is the same switch, one pod at a time: it has to
+// short-circuit everything the policy does, not merely relax the gate, or a
+// workload that opted out still gets convergence reported at it.
+func TestApplySuperpodPolicyDisabledPerPodLeavesNoTrace(t *testing.T) {
+	s := NewScheduler()
+	t.Cleanup(func() { close(s.stopCh) })
+
+	inSP := topoNode("node-in-sp", "1", "1", "1")
+	elsewhere := topoNode("node-elsewhere", "2", "2", "2")
+	registerTopoNode(t, s, inSP)
+	registerTopoNode(t, s, elsewhere)
+	s.podManager.AddPod(taskPod("p-0", "svc-escape"), "node-in-sp", device.PodDevices{})
+
+	scores := scoreList(nodeScore(inSP, 5), nodeScore(elsewhere, 99))
+	dropped, outcome := s.applySuperpodPolicy(scores, podWithSuperpodPolicy("p-1", "svc-escape", util.SuperpodSchedulerPolicyDisable.String()))
+
+	assert.Equal(t, len(dropped), 0)
+	assert.Equal(t, outcome, superpodOutcome{}, "an opted-out pod must produce nothing to report")
 	if want := []string{"node-in-sp", "node-elsewhere"}; !equal(orderOf(scores), want) {
 		t.Errorf("order = %v, want the incoming score order (binpack decides)", want)
 	}
