@@ -194,9 +194,10 @@ func (s *Scheduler) applyLeafAdjacency(scores *policy.NodeScoreList, pod *corev1
 			labeled++
 		}
 		boost := float32(score) / topoScoreScale * config.TopologyScoreWeight * sign
-		if boost == 0 {
-			continue
-		}
+		// All three bands are traced, the far one included: the point of the
+		// line is to show what the round knew about the fabric, and a candidate
+		// that scored nothing is part of that answer. An operator comparing two
+		// rounds has to be able to tell "cross-leaf" from "not a candidate".
 		klog.V(4).InfoS("[TopoTrace]",
 			"pod", klog.KObj(pod),
 			"node", ns.NodeID,
@@ -207,11 +208,13 @@ func (s *Scheduler) applyLeafAdjacency(scores *policy.NodeScoreList, pod *corev1
 		ns.Score += boost
 	}
 	// V(2), the same level the gate reports its own decision at, so an operator
-	// reading one round sees both halves of the topology layer or neither.
+	// reading one round sees both halves of the topology layer or neither. The
+	// weight is carried because it is the number an on-site calibration changes.
 	klog.V(2).InfoS("[TopoPrepare]",
 		"pod", klog.KObj(pod),
 		"task", util.GetTaskID(pod),
 		"mode", "SiblingFollow",
+		"weight", config.TopologyScoreWeight,
 		"anchors", len(adj.anchors),
 		"adjacent", labeled,
 		"status", "APPROVED")
