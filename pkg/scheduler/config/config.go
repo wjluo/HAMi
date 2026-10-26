@@ -74,6 +74,13 @@ var (
 	// enable with a warning.
 	SuperpodSchedulerPolicy = util.SuperpodSchedulerPolicyEnable.String()
 
+	// TopologyServicePlaneDomain is the domain name given to the 25GE business
+	// plane on nodes that carry no hami.io/topo.service label. The fabric
+	// interconnects every node, so an unlabelled service plane must not read as
+	// unknown or a service requirement would reject healthy nodes. Set it empty
+	// to require explicit service labelling.
+	TopologyServicePlaneDomain = "cluster"
+
 	// NodeLabelSelector is scheduler filter node by node label.
 	NodeLabelSelector map[string]string
 

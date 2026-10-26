@@ -98,8 +98,11 @@ type Scheduler struct {
 	// contradiction itself never gates a placement, so the scheduler only says
 	// the alarming part once and leaves the detail to the Pod event.
 	conflictingTopologyWarn sync.Once
-	eventRecorder           record.EventRecorder
-	started                 uint32 // 0 = false, 1 = true
+	// topoAudited latches the one-shot plane audit, so the 15 second register
+	// loop reports the fleet's topology coverage once instead of every pass.
+	topoAudited   atomic.Bool
+	eventRecorder record.EventRecorder
+	started       uint32 // 0 = false, 1 = true
 
 	lock   sync.RWMutex
 	synced atomic.Bool
@@ -625,6 +628,7 @@ func (s *Scheduler) register(labelSelector labels.Selector) {
 		return
 	}
 	klog.V(5).InfoS("Listed nodes", "nodeCount", len(rawNodes))
+	s.reportSuperpodTopology(rawNodes)
 	for _, val := range rawNodes {
 		klog.V(5).InfoS("Processing node", "nodeName", val.Name)
 

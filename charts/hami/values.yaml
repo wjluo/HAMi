@@ -80,6 +80,14 @@ scheduler:
     # topology is unaffected. The `hami.io/superpod-scheduler-policy` Pod annotation overrides it for one
     # workload, in every direction. It is passed as the `--superpod-scheduler-policy` flag.
     superpodSchedulerPolicy: enable
+  # -- Network-plane settings for the topology reader.
+  topology:
+    # -- Domain name the scheduler gives the 25GE business plane on nodes without a
+    # `hami.io/topo.service` label. That fabric interconnects every node, so an
+    # unlabelled node must not read as "unknown" to a `service` requirement. Set it
+    # empty to require explicit service labelling. It is passed as the
+    # `--topology-service-plane-domain` flag.
+    servicePlaneDomain: cluster
   # -- Address the scheduler serves Prometheus metrics on, as `[host]:port`. The chart also takes the port from it for the `metrics` container port.
   metricsBindAddress: ":9395"
   # -- Address of the pprof server, used only when `--profiling` is added to `scheduler.extender.extraArgs`. Keep it on loopback and reach it
