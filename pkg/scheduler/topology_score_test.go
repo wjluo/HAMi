@@ -166,6 +166,30 @@ func TestApplyLeafAdjacencyInertWithoutComputePlane(t *testing.T) {
 	assert.Equal(t, scoreOf(scores, "node-other"), float32(99))
 }
 
+// The weight is also the calibration lever on its own: at zero the soft score
+// is mute while the gate still holds the task in its domain, which is how an
+// operator separates "the distance is wrong" from "the domain is wrong" during
+// a live calibration. Mute means quiet, not noisy: an off layer writes nothing.
+func TestApplyLeafAdjacencyMutedByZeroWeight(t *testing.T) {
+	s := NewScheduler()
+	t.Cleanup(func() { close(s.stopCh) })
+	withTopologyScoreWeight(t, 0)
+
+	home := computeLeafNode(topoNode("node-home", "1", "1", "1"), "PF-1", "LF-1")
+	neighbour := computeLeafNode(topoNode("node-neighbour", "1", "1", "2"), "PF-1", "LF-1")
+	for _, node := range []*corev1.Node{home, neighbour} {
+		registerTopoNode(t, s, node)
+	}
+	s.nodeLister = nodeListerWith(home, neighbour)
+	s.podManager.AddPod(taskPod("p-0", "svc-zero"), "node-home", device.PodDevices{})
+
+	scores := scoreList(nodeScore(home, 1), nodeScore(neighbour, 2))
+	s.applyLeafAdjacency(scores, taskPod("p-1", "svc-zero"))
+
+	assert.Equal(t, scoreOf(scores, "node-home"), float32(1), "weight 0 must leave the packing score alone")
+	assert.Equal(t, scoreOf(scores, "node-neighbour"), float32(2))
+}
+
 // One switch closes the whole feature (P0-4's acceptance): a pod that turns
 // convergence off must not still be pulled towards its siblings' leaf by a
 // score, or `disable` would leave the topology layer half in place.
