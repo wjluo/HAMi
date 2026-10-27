@@ -1440,7 +1440,7 @@ func (s *Scheduler) Filter(args extenderv1.ExtenderArgs) (*extenderv1.ExtenderFi
 	klog.V(4).Infoln("nodeScores_len=", len((*nodeScores).NodeList))
 	sort.Sort(nodeScores)
 	// Must run before the last element is read: the winner is NodeList[len-1].
-	dropped, outcome := s.applySuperpodPolicy(nodeScores, pod)
+	dropped, outcome := s.applySuperpodPolicy(nodeScores, pod, newServiceSizing(*nodeUsage, resourceReqs))
 	failedNodes = mergeFailedNodes(failedNodes, dropped)
 	if len((*nodeScores).NodeList) == 0 {
 		klog.InfoS("Superpod policy left no candidate node; every node that fits devices lies outside the workload's superpod domain",
@@ -1522,7 +1522,7 @@ func (s *Scheduler) filterSimulation(args extenderv1.ExtenderArgs, resourceReqs 
 		}, nil
 	}
 	sort.Sort(nodeScores)
-	dropped, outcome := s.applySuperpodPolicy(nodeScores, args.Pod)
+	dropped, outcome := s.applySuperpodPolicy(nodeScores, args.Pod, newServiceSizing(*nodeUsage, resourceReqs))
 	failedNodes = mergeFailedNodes(failedNodes, dropped)
 	if len(nodeScores.NodeList) == 0 {
 		klog.V(3).InfoS("Superpod policy left no candidate in simulation",

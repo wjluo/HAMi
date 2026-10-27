@@ -415,7 +415,7 @@ func TestLeafAdjacencyOrdersWithinTheGateTier(t *testing.T) {
 	)
 	s.applyLeafAdjacency(scores, taskPod("p-1", "svc-compose"))
 	sort.Sort(scores)
-	dropped, _ := s.applySuperpodPolicy(scores, taskPod("p-1", "svc-compose"))
+	dropped, _ := s.applySuperpodPolicy(scores, taskPod("p-1", "svc-compose"), nil)
 
 	assert.Assert(t, sameSet(droppedIDs(dropped), []string{"node-foreign"}),
 		"the leaf boost must not keep a foreign superpod in: order=%v dropped=%v", orderOf(scores), droppedIDs(dropped))

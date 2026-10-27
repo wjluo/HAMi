@@ -145,7 +145,7 @@ func TestApplySuperpodPolicySameRackWinsAndForeignIsGated(t *testing.T) {
 		nodeScore(otherSP, 30),
 		nodeScore(plain, 40),
 	)
-	dropped, _ := s.applySuperpodPolicy(scores, taskPod("decode-0", "svc-a"))
+	dropped, _ := s.applySuperpodPolicy(scores, taskPod("decode-0", "svc-a"), nil)
 
 	if got := scores.NodeList[len(scores.NodeList)-1].NodeID; got != "node-same-rack" {
 		t.Fatalf("best node = %q, want node-same-rack (order=%v)", got, orderOf(scores))
@@ -174,7 +174,7 @@ func TestApplySuperpodPolicyTwoTierCluster(t *testing.T) {
 	s.podManager.AddPod(taskPod("p-0", "svc-b"), "node-in-sp", device.PodDevices{})
 
 	scores := scoreList(nodeScore(inSP, 5), nodeScore(elsewhere, 99))
-	dropped, _ := s.applySuperpodPolicy(scores, taskPod("p-1", "svc-b"))
+	dropped, _ := s.applySuperpodPolicy(scores, taskPod("p-1", "svc-b"), nil)
 
 	if got := scores.NodeList[len(scores.NodeList)-1].NodeID; got != "node-in-sp" {
 		t.Fatalf("best node = %q, want node-in-sp on a rack-less cluster (order=%v)", got, orderOf(scores))
@@ -197,7 +197,7 @@ func TestApplySuperpodPolicyForeignOnlyLeavesNoCandidate(t *testing.T) {
 	s.podManager.AddPod(taskPod("prefill-0", "svc-f"), "node-hosting-service", device.PodDevices{})
 
 	scores := scoreList(nodeScore(foreignA, 80), nodeScore(foreignB, 90))
-	dropped, _ := s.applySuperpodPolicy(scores, taskPod("decode-0", "svc-f"))
+	dropped, _ := s.applySuperpodPolicy(scores, taskPod("decode-0", "svc-f"), nil)
 
 	if len(scores.NodeList) != 0 {
 		t.Fatalf("order = %v, want an empty candidate list", orderOf(scores))
@@ -222,7 +222,7 @@ func TestApplySuperpodPolicyDisabled(t *testing.T) {
 	s.podManager.AddPod(taskPod("p-0", "svc-g"), "node-in-sp", device.PodDevices{})
 
 	scores := scoreList(nodeScore(inSP, 5), nodeScore(elsewhere, 99))
-	dropped, outcome := s.applySuperpodPolicy(scores, taskPod("p-1", "svc-g"))
+	dropped, outcome := s.applySuperpodPolicy(scores, taskPod("p-1", "svc-g"), nil)
 
 	if dropped != nil {
 		t.Errorf("dropped = %v, want none", droppedIDs(dropped))
@@ -255,7 +255,7 @@ func TestApplySuperpodPolicyDisabledPerPodLeavesNoTrace(t *testing.T) {
 	s.podManager.AddPod(taskPod("p-0", "svc-escape"), "node-in-sp", device.PodDevices{})
 
 	scores := scoreList(nodeScore(inSP, 5), nodeScore(elsewhere, 99))
-	dropped, outcome := s.applySuperpodPolicy(scores, podWithSuperpodPolicy("p-1", "svc-escape", util.SuperpodSchedulerPolicyDisable.String()))
+	dropped, outcome := s.applySuperpodPolicy(scores, podWithSuperpodPolicy("p-1", "svc-escape", util.SuperpodSchedulerPolicyDisable.String()), nil)
 
 	assert.Equal(t, len(dropped), 0)
 	assert.Equal(t, outcome, superpodOutcome{}, "an opted-out pod must produce nothing to report")
@@ -279,7 +279,7 @@ func TestApplySuperpodPolicyUnrecognizedValueStaysEnabled(t *testing.T) {
 	s.podManager.AddPod(taskPod("p-0", "svc-h"), "node-in-sp", device.PodDevices{})
 
 	scores := scoreList(nodeScore(inSP, 5), nodeScore(elsewhere, 99))
-	dropped, _ := s.applySuperpodPolicy(scores, taskPod("p-1", "svc-h"))
+	dropped, _ := s.applySuperpodPolicy(scores, taskPod("p-1", "svc-h"), nil)
 
 	if !sameSet(droppedIDs(dropped), []string{"node-elsewhere"}) {
 		t.Errorf("dropped = %v, want the foreign superpod gated out", droppedIDs(dropped))
@@ -345,7 +345,7 @@ func TestApplySuperpodPolicyPodAnnotationOverridesClusterDefault(t *testing.T) {
 				fresh.Annotations = map[string]string{util.SuperpodSchedulerPolicyAnnotationKey: tc.pod}
 			}
 			scores := scoreList(nodeScore(inSP, 5), nodeScore(elsewhere, 99))
-			dropped, _ := s.applySuperpodPolicy(scores, fresh)
+			dropped, _ := s.applySuperpodPolicy(scores, fresh, nil)
 
 			if !sameSet(droppedIDs(dropped), tc.wantDropped) {
 				t.Errorf("dropped = %v, want %v", droppedIDs(dropped), tc.wantDropped)
@@ -373,7 +373,7 @@ func TestApplySuperpodPolicyOutcomeDescribesThePlacement(t *testing.T) {
 	s.podManager.AddPod(taskPod("prefill-0", "svc-k"), "node-home", device.PodDevices{})
 
 	scores := scoreList(nodeScore(otherRack, 10), nodeScore(home, 20), nodeScore(foreign, 30))
-	dropped, outcome := s.applySuperpodPolicy(scores, taskPod("decode-0", "svc-k"))
+	dropped, outcome := s.applySuperpodPolicy(scores, taskPod("decode-0", "svc-k"), nil)
 
 	if !sameSet(droppedIDs(dropped), []string{"node-foreign"}) {
 		t.Fatalf("dropped = %v, want node-foreign", droppedIDs(dropped))
@@ -447,7 +447,7 @@ func TestApplySuperpodOutcomeNamesAnEmptyDomain(t *testing.T) {
 			}
 
 			scores := scoreList(nodeScore(other, 10), nodeScore(home, 20))
-			_, outcome := s.applySuperpodPolicy(scores, taskPod("new-0", tc.task))
+			_, outcome := s.applySuperpodPolicy(scores, taskPod("new-0", tc.task), nil)
 
 			msg := outcome.EventSuffix()
 			if !strings.Contains(msg, tc.want) {
@@ -481,7 +481,7 @@ func TestApplySuperpodPolicyConvergesLegacyTaskLabels(t *testing.T) {
 
 			pod := taskPod("new-0", "task-legacy")
 			pod.Labels = map[string]string{key: "task-legacy"}
-			dropped, outcome := s.applySuperpodPolicy(scoreList(nodeScore(foreign, 30), nodeScore(home, 10)), pod)
+			dropped, outcome := s.applySuperpodPolicy(scoreList(nodeScore(foreign, 30), nodeScore(home, 10)), pod, nil)
 
 			assert.Equal(t, len(dropped), 1, "the foreign superpod has to be gated out for a legacy label too")
 			if !strings.Contains(outcome.EventSuffix(), "task=task-legacy") {
@@ -508,7 +508,7 @@ func TestApplySuperpodPolicyOutcomeRecordsTheScoreItOverrode(t *testing.T) {
 	// Binpack puts the emptier node last, which is where the winner is read.
 	scores := scoreList(nodeScore(usedSP, 90), nodeScore(freshSP, 10))
 	scores.Policy = util.NodeSchedulerPolicyBinpack.String()
-	dropped, outcome := s.applySuperpodPolicy(scores, taskPod("unlabeled-0", ""))
+	dropped, outcome := s.applySuperpodPolicy(scores, taskPod("unlabeled-0", ""), nil)
 
 	if dropped != nil {
 		t.Fatalf("dropped = %v, want an unlabeled pod never gated", droppedIDs(dropped))
@@ -539,7 +539,7 @@ func TestApplySuperpodPolicyOutcomeReportsContradictoryTopology(t *testing.T) {
 	registerTopoNode(t, s, second)
 
 	scores := scoreList(nodeScore(first, 10), nodeScore(second, 20))
-	_, outcome := s.applySuperpodPolicy(scores, taskPod("plain-0", ""))
+	_, outcome := s.applySuperpodPolicy(scores, taskPod("plain-0", ""), nil)
 
 	if !strings.Contains(outcome.Conflict, "node-a") || !strings.Contains(outcome.Conflict, "node-b") {
 		t.Errorf("conflict = %q, want both nodes sharing serverid 7 named", outcome.Conflict)
@@ -564,7 +564,7 @@ func TestApplySuperpodPolicyUnlabeledPodPrefersUsedDomain(t *testing.T) {
 	s.podManager.AddPod(taskPod("other-0", "svc-i"), "node-used-sp", device.PodDevices{})
 
 	scores := scoreList(nodeScore(usedSP, 15), nodeScore(freshSP, 90))
-	dropped, _ := s.applySuperpodPolicy(scores, taskPod("anonymous-pod", ""))
+	dropped, _ := s.applySuperpodPolicy(scores, taskPod("anonymous-pod", ""), nil)
 
 	if dropped != nil {
 		t.Errorf("dropped = %v, want an unlabeled pod never gated", droppedIDs(dropped))
@@ -588,7 +588,7 @@ func TestApplySuperpodPolicyLabeledFirstPodAnchorsOnEmptyCluster(t *testing.T) {
 	sp2 := topoNode("node-sp2", "2", "2", "2")
 	scores := scoreList(nodeScore(sp1, 10), nodeScore(sp2, 20))
 
-	dropped, outcome := s.applySuperpodPolicy(scores, taskPod("first-pod", "svc-j"))
+	dropped, outcome := s.applySuperpodPolicy(scores, taskPod("first-pod", "svc-j"), nil)
 
 	if !outcome.IntentAnchor {
 		t.Fatalf("IntentAnchor = false, want a labeled first pod on an empty cluster to open by intent")
@@ -637,7 +637,7 @@ func TestApplySuperpodPolicySpillPlacesForeignWhenDomainFull(t *testing.T) {
 	// has already been dropped upstream for lack of capacity.
 	scores := scoreList(nodeScore(foreign, 10))
 	dropped, outcome := s.applySuperpodPolicy(scores,
-		podWithSuperpodPolicy("svc-new", "svc-f", util.SuperpodSchedulerPolicySpill.String()))
+		podWithSuperpodPolicy("svc-new", "svc-f", util.SuperpodSchedulerPolicySpill.String()), nil)
 
 	if len(dropped) != 0 {
 		t.Errorf("dropped = %v, want spill to keep the foreign node rather than reject it", droppedIDs(dropped))
@@ -673,7 +673,7 @@ func TestApplySuperpodPolicySpillStaysInDomainWhenItFits(t *testing.T) {
 	// node is gated out exactly as under the strict policy.
 	scores := scoreList(nodeScore(foreign, 20), nodeScore(home, 10))
 	dropped, outcome := s.applySuperpodPolicy(scores,
-		podWithSuperpodPolicy("svc-new", "svc-f", util.SuperpodSchedulerPolicySpill.String()))
+		podWithSuperpodPolicy("svc-new", "svc-f", util.SuperpodSchedulerPolicySpill.String()), nil)
 
 	if outcome.CapacitySpill != "" {
 		t.Errorf("CapacitySpill = %q, want no spill when the domain still fits", outcome.CapacitySpill)
@@ -702,7 +702,7 @@ func TestApplySuperpodPolicyStrictDefaultStillStrandsWhenDomainFull(t *testing.T
 
 	scores := scoreList(nodeScore(foreign, 10))
 	dropped, outcome := s.applySuperpodPolicy(scores,
-		podWithSuperpodPolicy("svc-new", "svc-f", util.SuperpodSchedulerPolicyEnable.String()))
+		podWithSuperpodPolicy("svc-new", "svc-f", util.SuperpodSchedulerPolicyEnable.String()), nil)
 
 	if outcome.CapacitySpill != "" {
 		t.Errorf("CapacitySpill = %q, want the strict default never to spill", outcome.CapacitySpill)
@@ -744,7 +744,7 @@ func TestApplySuperpodPolicyNoOps(t *testing.T) {
 			}
 			before := orderOf(scores)
 
-			dropped, _ := s.applySuperpodPolicy(scores, tc.pod)
+			dropped, _ := s.applySuperpodPolicy(scores, tc.pod, nil)
 
 			if dropped != nil {
 				t.Errorf("dropped = %v, want none", droppedIDs(dropped))
@@ -783,7 +783,7 @@ func TestApplySuperpodPolicyReadsTopologyFromListerWhenCacheIsStale(t *testing.T
 	s.podManager.AddPod(taskPod("prefill-0", "svc-live"), "node-anchor", device.PodDevices{})
 
 	scores := scoreList(nodeScore(stale, 10), nodeScore(plain, 20))
-	dropped, _ := s.applySuperpodPolicy(scores, taskPod("decode-0", "svc-live"))
+	dropped, _ := s.applySuperpodPolicy(scores, taskPod("decode-0", "svc-live"), nil)
 
 	if dropped != nil {
 		t.Errorf("dropped = %v, want no node gated out (both candidates are usable)", droppedIDs(dropped))
@@ -811,7 +811,7 @@ func TestApplySuperpodPolicyFallsBackToSnapshotWithoutLister(t *testing.T) {
 	s.podManager.AddPod(taskPod("prefill-0", "svc-live"), "node-sp2", device.PodDevices{})
 
 	scores := scoreList(nodeScore(foreign, 30), nodeScore(home, 10))
-	dropped, _ := s.applySuperpodPolicy(scores, taskPod("decode-0", "svc-live"))
+	dropped, _ := s.applySuperpodPolicy(scores, taskPod("decode-0", "svc-live"), nil)
 
 	if !sameSet(droppedIDs(dropped), []string{"node-sp1"}) {
 		t.Fatalf("dropped = %v, want node-sp1 gated from the snapshot annotations", droppedIDs(dropped))
@@ -839,7 +839,7 @@ func TestApplySuperpodPolicyExcludesSelf(t *testing.T) {
 	s.podManager.AddPod(peer, "node-sp2", device.PodDevices{})
 
 	scores := scoreList(nodeScore(sp2, 10), nodeScore(sp1, 20))
-	dropped, _ := s.applySuperpodPolicy(scores, self)
+	dropped, _ := s.applySuperpodPolicy(scores, self, nil)
 
 	if !sameSet(droppedIDs(dropped), []string{"node-sp1"}) {
 		t.Fatalf("dropped = %v, want self's own superpod gated out because self is excluded from occupancy", droppedIDs(dropped))
@@ -902,7 +902,7 @@ func TestApplySuperpodPolicyEscapeValvePlacementDoesNotWidenTheDomain(t *testing
 
 	// The foreign node scores best, so without the gate this pod lands there.
 	scores := scoreList(nodeScore(home, 5), nodeScore(foreign, 99))
-	dropped, outcome := s.applySuperpodPolicy(scores, taskPod("p-2", "svc-ratchet"))
+	dropped, outcome := s.applySuperpodPolicy(scores, taskPod("p-2", "svc-ratchet"), nil)
 
 	if got := outcome.Domains; got != "1" {
 		t.Errorf("occupied = %q, want \"1\": an escape-valve placement must not widen the task's domain", got)
@@ -932,7 +932,7 @@ func TestApplySuperpodPolicyDisabledPlacementDoesNotWidenTheDomain(t *testing.T)
 		"node-foreign", device.PodDevices{})
 
 	scores := scoreList(nodeScore(home, 5), nodeScore(foreign, 99))
-	_, outcome := s.applySuperpodPolicy(scores, taskPod("p-2", "svc-ratchet"))
+	_, outcome := s.applySuperpodPolicy(scores, taskPod("p-2", "svc-ratchet"), nil)
 
 	assert.Equal(t, outcome.Domains, "1")
 }
@@ -954,7 +954,7 @@ func TestApplySuperpodPolicyNamesEscapedSiblingsOutsideTheDomain(t *testing.T) {
 		"node-foreign", device.PodDevices{})
 
 	scores := scoreList(nodeScore(home, 5), nodeScore(foreign, 99))
-	_, outcome := s.applySuperpodPolicy(scores, taskPod("p-2", "svc-orphan"))
+	_, outcome := s.applySuperpodPolicy(scores, taskPod("p-2", "svc-orphan"), nil)
 
 	msg := outcome.EventSuffix()
 	if !strings.Contains(msg, "outside") || !strings.Contains(msg, "superpod 2") {
@@ -978,7 +978,7 @@ func TestApplySuperpodOutcomeWarnsOnMultiDomainService(t *testing.T) {
 	s.podManager.AddPod(taskPod("p-1", "svc-split"), "node-other", device.PodDevices{})
 
 	scores := scoreList(nodeScore(home, 5), nodeScore(other, 99))
-	_, outcome := s.applySuperpodPolicy(scores, taskPod("p-2", "svc-split"))
+	_, outcome := s.applySuperpodPolicy(scores, taskPod("p-2", "svc-split"), nil)
 
 	assert.Equal(t, outcome.Domains, "1,2")
 	if msg := outcome.EventSuffix(); !strings.Contains(msg, "WARNING") || !strings.Contains(msg, "2 superpod domains") {
@@ -1003,7 +1003,7 @@ func TestApplySuperpodPolicyClusterWideSpillStillOccupies(t *testing.T) {
 	s.podManager.AddPod(taskPod("p-0", "svc-default-spill"), "node-foreign", device.PodDevices{})
 
 	scores := scoreList(nodeScore(foreign, 5), nodeScore(elsewhere, 99))
-	dropped, outcome := s.applySuperpodPolicy(scores, taskPod("p-1", "svc-default-spill"))
+	dropped, outcome := s.applySuperpodPolicy(scores, taskPod("p-1", "svc-default-spill"), nil)
 
 	assert.Equal(t, outcome.Domains, "2", "a sibling placed under the cluster default stays part of the domain")
 	assert.Equal(t, len(droppedIDs(dropped)), 1, "the third superpod is still foreign to this task")

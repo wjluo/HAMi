@@ -109,6 +109,13 @@ const (
 	SuperpodSchedulerPolicyAnnotationKey = "hami.io/superpod-scheduler-policy"
 	// DeviceScoringWeightsAnnotationKey configures per-Pod slot, core, and memory scoring weights.
 	DeviceScoringWeightsAnnotationKey = "hami.io/device-scoring-weights"
+	// TaskReplicaCountAnnotationKey is how a workload states the size of the
+	// task its Pod belongs to, so the scheduler can open the first replica in a
+	// superpod that will still hold the rest. A task that is scaled out or
+	// creates its Pods lazily knows its own size before the cluster sees every
+	// Pod; without this annotation the scheduler counts the Pods already created
+	// for the task. See hami.io/taskid.
+	TaskReplicaCountAnnotationKey = "hami.io/task-replica-count"
 	// NumaAlignmentAnnotationKey is a per-Pod annotation selecting how HAMi
 	// reconciles the scheduler-selected GPU with the NUMA-aligned replica
 	// preferred by kubelet's Topology Manager. See NumaAlignmentMode.

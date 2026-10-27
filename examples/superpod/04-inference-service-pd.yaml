@@ -5,6 +5,9 @@
 #       不设硬门），靠 taskid 做"偏好级"收拢。
 # 要点：PD 两侧必须写**同一个** hami.io/taskid，否则会被当成两个互不相关的服务，
 #       各锚各的域。
+#       hami.io/task-replica-count 让首 Pod 就选到一个装得下整服务的超节点：
+#       装不下的域会被"held back"（事件里能看到），而不是等副本陆续到齐后
+#       撞在满域外面 Pending。
 apiVersion: v1
 kind: Pod
 metadata:
@@ -13,6 +16,10 @@ metadata:
     hami.io/taskid: llama-service-001
   annotations:
     hami.io/fabric-requirement: "service"
+    # 整服务规模：首 Pod 选域时先剔除"装不下 8 个副本"的超节点，避免后面的副本
+    # 到达时才发现域满。写成 Deployment 时可以省略（调度器数得出来），裸 Pod 起
+    # 的服务只有业务侧自己知道要开几个。
+    hami.io/task-replica-count: "8"
 spec:
   containers:
     - name: prefill
@@ -30,6 +37,7 @@ metadata:
     hami.io/taskid: llama-service-001     # 与 prefill 同值 → 收拢到同一域
   annotations:
     hami.io/fabric-requirement: "service" # 两侧取值要一致，否则 Gate 判据不同域
+    hami.io/task-replica-count: "8"       # 与 prefill 同值：整个服务的 Pod 总数（两侧之和）
 spec:
   containers:
     - name: decode

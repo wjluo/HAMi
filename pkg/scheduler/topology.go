@@ -132,6 +132,17 @@ type superpodOutcome struct {
 	// domain, having been placed through the per-Pod escape valve. They are left
 	// out of Domains on purpose, so this is the only place the split shows.
 	EscapedSiblings string
+	// Replicas is the size of the task the pre-placement sizing measured
+	// against, zero when the sizing had nothing to say. It is reported because
+	// "this domain cannot hold 8" is only meaningful next to the 8.
+	Replicas int64
+	// CapacityHold names the superpods the first pod of a task avoided because
+	// they could not hold the whole service. Empty unless a domain was held back.
+	CapacityHold string
+	// CapacityShort says the one thing a performance-first cluster must never
+	// hide: no candidate superpod can hold the task, so the pod is placed where
+	// the scoring put it and the shortfall is reported instead of enforced.
+	CapacityShort string
 	// Conflict describes a topology report that contradicts itself, empty when
 	// the annotations agree.
 	Conflict string
@@ -140,7 +151,7 @@ type superpodOutcome struct {
 // EventSuffix renders the decision for a Pod Event, which is what
 // kubectl describe pod shows. An empty string means there is nothing to add.
 func (o superpodOutcome) EventSuffix() string {
-	if o.SelectedNodeID == "" && o.Gated == 0 && o.Conflict == "" {
+	if o.SelectedNodeID == "" && o.Gated == 0 && o.Conflict == "" && o.CapacityHold == "" && o.CapacityShort == "" {
 		return ""
 	}
 	var msg string
@@ -162,6 +173,7 @@ func (o superpodOutcome) EventSuffix() string {
 			msg += fmt.Sprintf(", topology outranked the %s score order (score preferred %s)", o.Policy, o.ScorePreferred)
 		}
 	}
+	msg += o.capacityClause()
 	if o.MultiDomain {
 		// A split service is not a placement preference. Say so in the one
 		// channel a user reads without turning on scheduler verbosity.
@@ -245,7 +257,12 @@ func (o superpodOutcome) domainsClause() string {
 // superpods already in use instead of cutting the rest away. Clusters whose
 // nodes carry no topology annotations, and a workload nothing has placed yet,
 // are left exactly as they were.
-func (s *Scheduler) applySuperpodPolicy(scores *policy.NodeScoreList, pod *corev1.Pod) (map[string]string, superpodOutcome) {
+//
+// sizing carries the candidate nodes' live device usage and the shape of one of
+// this pod's task's pods. With it, the first pod of a task also avoids opening
+// in a superpod that cannot hold the rest of the service; without it, or with
+// nothing to size, the decision is the same one this function made before.
+func (s *Scheduler) applySuperpodPolicy(scores *policy.NodeScoreList, pod *corev1.Pod, sizing *serviceSizing) (map[string]string, superpodOutcome) {
 	if scores == nil || pod == nil || len(scores.NodeList) == 0 || !superpodPolicyEnabled(pod) {
 		return nil, superpodOutcome{}
 	}
@@ -311,6 +328,20 @@ func (s *Scheduler) applySuperpodPolicy(scores *policy.NodeScoreList, pod *corev
 		occupied, escaped = s.collectTaskOccupancy(taskID, pod.UID)
 	} else {
 		occupied = s.collectClusterOccupancy(pod.UID)
+	}
+	// Pre-placement sizing of the whole task, on the same condition the
+	// deterministic intent is decided on: nothing of this task is bound yet, so
+	// this pod is the one that picks the domain every later replica has to live
+	// in. Holding back a superpod that cannot fit the service is what turns "the
+	// last replica arrives to a full domain" from a Pending pod into a choice
+	// made at submission.
+	var held []topotree.Entry
+	if taskID != "" && len(occupied.SuperPodIDs) == 0 {
+		var kept []topotree.Entry
+		kept, held, outcome.Replicas, outcome.CapacityHold, outcome.CapacityShort = s.shrinkToSizedDomains(entries, pod, taskID, sizing)
+		if len(held) > 0 {
+			entries = kept
+		}
 	}
 	// The first pod of a labelled task has no bound sibling to follow, so a
 	// purely reactive gate would let two pods of one task open in two
@@ -394,6 +425,9 @@ func (s *Scheduler) applySuperpodPolicy(scores *policy.NodeScoreList, pod *corev
 		"service", taskID,
 		"rackTier", hasRack,
 		"intentAnchor", outcome.IntentAnchor,
+		"taskReplicas", outcome.Replicas,
+		"capacityHold", outcome.CapacityHold,
+		"capacityShort", outcome.CapacityShort,
 		"capacitySpill", outcome.CapacitySpill,
 		"occupied", outcome.Domains,
 		"multiDomain", outcome.MultiDomain,
@@ -404,14 +438,19 @@ func (s *Scheduler) applySuperpodPolicy(scores *policy.NodeScoreList, pod *corev
 		"overrodeScore", outcome.OverrodeScore,
 		"conflict", outcome.Conflict)
 
-	if len(dropped) == 0 {
+	if len(dropped) == 0 && len(held) == 0 {
 		return nil, outcome
 	}
-	failed := make(map[string]string, len(dropped))
+	failed := make(map[string]string, len(dropped)+len(held))
 	for _, entry := range dropped {
 		failed[entry.NodeID] = fmt.Sprintf(
 			"node %s is in superpod %d, outside the superpod domain this workload converges into (%s)",
 			entry.NodeID, entry.SuperPodID, outcome.Domains)
+	}
+	for _, entry := range held {
+		failed[entry.NodeID] = fmt.Sprintf(
+			"node %s is held back, its superpod cannot fit the rest of this task (%s)",
+			entry.NodeID, outcome.CapacityHold)
 	}
 	return failed, outcome
 }

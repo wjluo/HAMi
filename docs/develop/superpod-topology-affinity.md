@@ -64,7 +64,7 @@ in the chart) and on by default.
 | Value | Behaviour |
 | --- | --- |
 | `enable` | Candidates in a superpod the workload does not belong to are taken out of the candidate list. If that leaves nothing, the Pod stays pending - it is not placed in a foreign superpod. |
-| `spill` | The same strict hold while any candidate in the workload's own superpod fits the Pod, but when the occupied domain has no fitting candidate this round the Pod is placed in a foreign superpod instead of being left pending. The Pod event and the decision log name the domain it spilled out of, so the topology-for-delivery trade is visible without reading scheduler internals. It is the capacity escape for a converged service whose domain has filled: this layer cannot see a replica count to pre-size against, but it can see that no candidate in the domain fits the Pod in front of it. |
+| `spill` | The same strict hold while any candidate in the workload's own superpod fits the Pod, but when the occupied domain has no fitting candidate this round the Pod is placed in a foreign superpod instead of being left pending. The Pod event and the decision log name the domain it spilled out of, so the topology-for-delivery trade is visible without reading scheduler internals. It is the capacity escape for a converged service whose domain has filled: the pre-sizing keeps a first pod out of a domain too small for the task, but a service that fills its domain replica by replica is only visible here, one pod at a time. |
 | `disable` | No topology handling at all, and the ranking above goes with it: the binpack/spread scores alone pick the node. |
 
 An unrecognised value is reported and read as `enable`, so a typo cannot
@@ -184,6 +184,41 @@ answered in `taskLabel=`, and `service=` as a deprecated alias of `task=` for
 one release, so a fleet can be searched for legacy spellings before the
 fallbacks are dropped.
 
+## Sizing the whole service before the first pod lands
+
+A task's first pod picks the domain every later replica has to live in, so the
+scheduler measures the candidate domains against the size of the task before it
+anchors. The size comes from:
+
+| Source | When it is used |
+| --- | --- |
+| `hami.io/task-replica-count` on the Pod | The workload's own statement of how many pods the task will have, including both halves of a PD service. Authoritative, and the only one that works for a bare-Pod service or a workload that creates pods lazily. |
+| The pods already in the cluster with the same `hami.io/taskid` | The default. Exact for a Deployment or StatefulSet, which builds all of its pods before any of them is scheduled. |
+| One | Neither of the above answered. The sizing layer then does nothing at all: no constraint is invented from a guess. |
+
+Each candidate superpod is then asked "how many pods of this shape fit here",
+counting the free slots, memory, and cores of its candidate nodes - whichever
+dimension is tightest decides, and a percentage-memory request is priced against
+the device the same way the device fit books it. A backend that stores cores as
+a bit mask contributes no core dimension. The pod being placed counts on the
+side of the domain it opens, because the usage the scoring hands over already
+has it booked.
+
+Two deliberate limits keep this a preference and not a second gate:
+
+- **A shortfall is reported, not enforced.** If no candidate superpod can hold
+  the task, nothing is removed for capacity and the pod lands wherever the
+  scoring put it, with `sizing: no candidate superpod holds N replica(s);
+  largest holds M` in its event. The room measured here is an estimate - a node
+  with fragmented free memory reads roomier than a per-device count would say -
+  and a workload must not be stranded by an estimate.
+- **Only the first pod is sized.** Once a sibling is bound, the domain is
+  settled, and re-measuring it every time a node's free capacity ticks would
+  reopen a decided question.
+
+Unannotated nodes belong to no domain, so no domain shortage is ever shown
+against them; they are exempt exactly as they are from the gate.
+
 ## What strict convergence costs
 
 The gate can leave a pod pending that would otherwise fit, so a superpod domain
@@ -199,7 +234,7 @@ Capacity in the domain the workload already occupies is what it gets.
 | --- | --- |
 | Domain has room | All pods of the service land in it, at the closest rack available. |
 | Domain full, another superpod has room | The pod stays pending, and its event names the domain it is waiting for. Free it with the Pod annotation, or add capacity in the domain. |
-| No pod of the service placed yet | Full candidate list; wherever the scores pick becomes the service's domain. |
+| No pod of the service placed yet | The domains too small for the whole task are held back first; inside what is left, wherever the intent and the scores pick becomes the service's domain. |
 | Nodes unannotated | The policy changes nothing at all. |
 
 ## What the requirement asked for, and what shipped
@@ -259,6 +294,24 @@ including the nodes that lost, is one level deeper:
 kubectl -n kube-system logs deploy/hami-scheduler --tail=200 | grep 'Applied superpod scheduling policy'
 ```
 
+A sized task says which superpods it refused to open in, and - when nothing in
+the candidate set was big enough - that the shortfall was reported instead of
+enforced:
+
+```
+Normal   FilteringSucceed  find fit node(node-roomy), 1 nodes not fit, 2 nodes fit(...);
+  superpod placement: node=node-roomy tier=same-superpod superpod=2
+  task=svc-a opening superpod(s) [2] by deterministic intent, no sibling bound yet
+  sizing held back superpod(s): superpod 1 holds 3 of 8 replica(s)
+
+Warning  FilteringFailed   ... ; sizing: no candidate superpod holds 8 replica(s); largest holds 6 (superpod 2)
+```
+
+A node the sizing held back is reported as not fit with the same figure in its
+`FailedNodes` reason, so "why didn't this service open in superpod 1" is
+answerable from the pod whenever the round ends with no candidate; when it ends
+with a placement, the sizing sentence is in the event above.
+
 A node whose annotations contradict its peers - the same `hami.io/serverid`
 reported under two different `hami.io/superpodid` values, which is what a
 hand-edited or stale annotation produces - is reported rather than guessed at:
@@ -308,7 +361,11 @@ cd ../ascend-device-plugin && go test ./internal/topology/ ./internal/server/
 ```
 
 `pkg/scheduler/topology_wiring_test.go` drives the real `Filter` so the
-injection point itself is covered. The two key-pinning tests
+injection point itself is covered, and
+`pkg/scheduler/topology_capacity_test.go` pins the pre-placement sizing: where a
+task's replica count comes from, how a node's free slots, memory, and cores turn
+into "pods of this shape", and that the sizing only ever holds a domain back
+when another one can take the task. The two key-pinning tests
 (`TestTopologyKeysAreTheCrossRepoContract` and
 `TestAnnotationKeysMatchTheHamiContract`) hold the same table in each repo:
 they do not detect drift on their own, but they make renaming a key a
