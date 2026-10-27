@@ -51,12 +51,12 @@ func TestLoadDomainRegistryAbsentMeansNoVendorMapping(t *testing.T) {
 func TestLoadDomainRegistryFromConfigMap(t *testing.T) {
 	t.Setenv("POD_NAMESPACE", "kube-system")
 	s := &Scheduler{kubeClient: fake.NewSimpleClientset(cmWithRegistry(map[string]string{
-		plane.DomainRegistryConfigMapKey: "plane: compute\ndomains:\n  - name: PF-SZ01\n    match: DC1_FB13-LF46\n",
+		plane.DomainRegistryConfigMapKey: "plane: compute\ndomains:\n  - name: PF-SZ01\n    match: DC1_FB01-LF01\n",
 	}))}
 
 	reg, err := s.loadDomainRegistry()
 	assert.NilError(t, err)
-	name, ok := reg.DomainFor("leaf-SZPX06R1D10U39-DCN-DC1_FB13-LF46_A")
+	name, ok := reg.DomainFor("leaf-SITE01R1D10U39-DCN-DC1_FB01-LF01_A")
 	assert.Assert(t, ok)
 	assert.Equal(t, name, "PF-SZ01")
 }

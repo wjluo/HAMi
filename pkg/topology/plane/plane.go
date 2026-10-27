@@ -414,7 +414,7 @@ func parseCombined(value string) map[string]string {
 }
 
 // leafFromPath takes the last segment of a vendor path such as
-// leaf-SZPX06R1D10U39-DCN-DC1_FB13-LF46_A, whose tail is the leaf identifier.
+// leaf-SITE01R1D10U39-DCN-DC1_FB01-LF01_A, whose tail is the leaf identifier.
 func leafFromPath(path string) string {
 	seg := strings.Split(strings.Trim(path, "-"), "-")
 	if len(seg) < 2 {
@@ -448,7 +448,7 @@ type registryFile struct {
 //	plane: compute
 //	domains:
 //	  - name: PF-SZ01
-//	    match: "-DCN-DC1_FB13-LF46"
+//	    match: "-DCN-DC1_FB01-LF01"
 //
 // Rule order decides which domain wins when a path matches more than one
 // substring, so a duplicated name or match is refused at load time rather than

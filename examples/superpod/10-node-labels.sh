@@ -15,12 +15,12 @@ set -euo pipefail
 # 现网已投产的 path 标签保持不动，这里只补 domain 短名与 scaleup=none
 PF_DOMAIN="PF-SZ01"
 for n in \
-  st03-az01phmu03-w2.cic.cmbchina.cn \
-  st03-az01phmu03-w1.cic.cmbchina.cn
+  cicpoc-a3-1.example.com \
+  cicpoc-a3-2.example.com
 do
   kubectl label node "$n" \
     "hami.io/topo.compute.domain=${PF_DOMAIN}" \
-    "hami.io/topo.compute.leaf=LF46_A" \
+    "hami.io/topo.compute.leaf=LF01_A" \
     "hami.io/topo.scaleup.domain=none" \
     --overwrite
 done

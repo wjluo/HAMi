@@ -323,7 +323,7 @@ func TestApplyLeafAdjacencyReadsTheVendorPathThroughTheRegistry(t *testing.T) {
 	t.Cleanup(func() { close(s.stopCh) })
 	withTopologyScoreWeight(t, 3.0)
 
-	reg, err := plane.ParseRegistry("plane: compute\ndomains:\n  - name: PF-SZ01\n    match: DC1_FB13\n")
+	reg, err := plane.ParseRegistry("plane: compute\ndomains:\n  - name: PF-SZ01\n    match: DC1_FB01\n")
 	assert.NilError(t, err)
 	s.domainRegistry.Store(reg)
 
@@ -335,9 +335,9 @@ func TestApplyLeafAdjacencyReadsTheVendorPathThroughTheRegistry(t *testing.T) {
 		node.Labels["topology.ascend.huawei.com/path"] = path
 		return node
 	}
-	home := path("node-home", "1", "1", "leaf-SZPX06R1-DCN-DC1_FB13-LF46_A")
-	neighbour := path("node-neighbour", "1", "1", "leaf-SZPX06R2-DCN-DC1_FB13-LF46_A")
-	distant := path("node-distant", "1", "2", "leaf-SZPX06R3-DCN-DC2_FB99-LF01_A")
+	home := path("node-home", "1", "1", "leaf-SITE01R1-DCN-DC1_FB01-LF01_A")
+	neighbour := path("node-neighbour", "1", "1", "leaf-SITE01R2-DCN-DC1_FB01-LF01_A")
+	distant := path("node-distant", "1", "2", "leaf-SITE01R3-DCN-DC2_FB99-LF01_A")
 	for _, node := range []*corev1.Node{home, neighbour, distant} {
 		registerTopoNode(t, s, node)
 	}

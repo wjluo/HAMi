@@ -7,7 +7,7 @@
 #   不贡献域号 —— 宁可不加分也不误拒。
 #
 # 现网整串本身自带 fabric 线索，例如
-#   leaf-SZPX06R1E10U39-DCN-DC1_FB13-LF46_A
+#   leaf-SITE01R1E01U01-DCN-DC1_FB01-LF01_A
 #         └─ 机柜/位置 ─────┘ └─域─┘ └交换─┘ └leaf┘
 # 所以 match 用"前缀包含"式匹配即可，不需要重新抄一遍拓扑。
 apiVersion: v1
@@ -20,11 +20,11 @@ data:
     plane: compute
     domains:
       - name: PF-SZ01          # 类二：A3 传统 RDMA 高网（参数面）
-        match: "-DCN-DC1_FB13-LF4"
+        match: "-DCN-DC1_FB01-LF4"
       - name: SO-SET1          # 类四：A5 scale-out 第 1 套
-        match: "leaf-SZPX06R1F"
+        match: "leaf-SITE01R1F"
       - name: SO-SET2          # 类四：A5 scale-out 第 2 套
-        match: "leaf-SZPX06R1G"
+        match: "leaf-SITE01R1G"
     # 未被任何 match 命中的 path 整串 → 报 domain-unmapped，该平面按"未打标"处理
 ---
 # 生效方式（不是挂载）：调度器用 API 直接读它——命名空间取 $POD_NAMESPACE，

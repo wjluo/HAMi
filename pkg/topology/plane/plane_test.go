@@ -41,9 +41,9 @@ plane: compute
 domains:
   # comment lines must not break the load
   - name: PF-SZ01
-    match: "-DCN-DC1_FB13-LF46"
+    match: "-DCN-DC1_FB01-LF01"
   - name: SO-SET1
-    match: "R1F10U39"
+    match: "R1F01U01"
 `)
 	assert.NilError(t, err)
 	return reg
@@ -89,7 +89,7 @@ func TestResolveScaleUpReadsLegacyMockSupernodeIDAlias(t *testing.T) {
 
 func TestResolveComputeFromVendorPathLabelAndRegistry(t *testing.T) {
 	n := nodeWith(map[string]string{
-		"topology.ascend.huawei.com/path": "leaf-SZPX06R1D10U39-DCN-DC1_FB13-LF46_A",
+		"topology.ascend.huawei.com/path": "leaf-SITE01R1D10U39-DCN-DC1_FB01-LF01_A",
 	}, nil)
 	got := Resolve(n, testRegistry(t))
 
@@ -101,7 +101,7 @@ func TestResolveComputeFromVendorPathLabelAndRegistry(t *testing.T) {
 	// A node on the physically isolated scale-out fabric is a different domain,
 	// so the gate must reject it - not score it lower.
 	other := Resolve(nodeWith(map[string]string{
-		"topology.ascend.huawei.com/path": "leaf-SZPX06R1F10U39-DCN-R1F10U39-B",
+		"topology.ascend.huawei.com/path": "leaf-SITE01R1F01U01-DCN-R1F01U01-B",
 	}, nil), testRegistry(t))
 	assert.Equal(t, other[Compute].Raw[0], "SO-SET1")
 	assert.Assert(t, !d.SameDomain(other[Compute]), "different short names are different domains")
@@ -111,9 +111,9 @@ func TestResolveComputeFromVendorPathLabelAndRegistry(t *testing.T) {
 func TestResolveComputeDomainMismatchDegradesToUnlabeled(t *testing.T) {
 	// Ops labelled SO-SET1, but the vendor path only matches PF-SZ01 -> conflict.
 	n := nodeWith(map[string]string{
-		"topology.ascend.huawei.com/path": "leaf-SZPX06R1D10U39-DCN-DC1_FB13-LF46_A",
+		"topology.ascend.huawei.com/path": "leaf-SITE01R1D10U39-DCN-DC1_FB01-LF01_A",
 		"hami.io/topo.compute.domain":     "SO-SET1",
-		"hami.io/topo.compute.leaf":       "LF46_A",
+		"hami.io/topo.compute.leaf":       "LF01_A",
 	}, nil)
 	got := Resolve(n, testRegistry(t))
 
@@ -263,7 +263,7 @@ func TestParseRegistryRejectsAmbiguousAndMisspelledFiles(t *testing.T) {
 func TestRegistryOnlyFeedsItsOwnPlane(t *testing.T) {
 	reg, err := ParseRegistry("plane: scaleup\ndomains:\n  - name: A\n    match: X\n")
 	assert.NilError(t, err)
-	n := nodeWith(map[string]string{"topology.ascend.huawei.com/path": "leaf-SZPX06R1D10U39-DCN-DC1_FB13-LF46_A"}, nil)
+	n := nodeWith(map[string]string{"topology.ascend.huawei.com/path": "leaf-SITE01R1D10U39-DCN-DC1_FB01-LF01_A"}, nil)
 
 	assert.Equal(t, Resolve(n, reg)[Compute].State, Unlabeled,
 		"a scaleup registry must not name compute domains")
@@ -298,7 +298,7 @@ func TestIdenticalLabelAndAnnotationIsNotAConflict(t *testing.T) {
 
 func TestVendorPathOutsideTheRegistryStaysUnlabeled(t *testing.T) {
 	n := nodeWith(map[string]string{
-		"topology.ascend.huawei.com/path": "leaf-SZPX06R1D10U39-DCN-DC4_OTHER-LF99_A",
+		"topology.ascend.huawei.com/path": "leaf-SITE01R1D10U39-DCN-DC4_OTHER-LF99_A",
 	}, nil)
 	got := Resolve(n, testRegistry(t))
 
