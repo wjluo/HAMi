@@ -46,11 +46,22 @@ func (l NodeScoreList) Swap(i, j int) {
 }
 
 func (l NodeScoreList) Less(i, j int) bool {
-	if l.Policy == util.NodeSchedulerPolicySpread.String() {
-		return l.NodeList[i].Score > l.NodeList[j].Score
+	si, sj := l.NodeList[i].Score, l.NodeList[j].Score
+	if si != sj {
+		if l.Policy == util.NodeSchedulerPolicySpread.String() {
+			return si > sj
+		}
+		// default policy is Binpack
+		return si < sj
 	}
-	// default policy is Binpack
-	return l.NodeList[i].Score < l.NodeList[j].Score
+	// Equal scores must still have one order. calcScoreWithOptions scores each
+	// candidate in its own goroutine and appends the survivors as they return,
+	// so the list handed to the sort is not reproducible between calls, and the
+	// filter reads NodeList[len-1] as the chosen node. Without a tiebreak two
+	// Filter rounds for one pod - a requeued bind, an extender timeout - can
+	// name two different nodes. Descending names put the smallest node last, so
+	// the winner is a function of the scores alone.
+	return l.NodeList[i].NodeID > l.NodeList[j].NodeID
 }
 
 // policyNeutralScorer is an optional interface a device backend may implement to

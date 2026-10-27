@@ -17,6 +17,8 @@ limitations under the License.
 package policy
 
 import (
+	"sort"
+	"strings"
 	"testing"
 
 	"k8s.io/klog/v2"
@@ -24,6 +26,7 @@ import (
 	"github.com/Project-HAMi/HAMi/pkg/device"
 	"github.com/Project-HAMi/HAMi/pkg/device/nvidia"
 	"github.com/Project-HAMi/HAMi/pkg/scheduler/config"
+	"github.com/Project-HAMi/HAMi/pkg/util"
 
 	"gotest.tools/v3/assert"
 	corev1 "k8s.io/api/core/v1"
@@ -185,6 +188,82 @@ func TestLess(t *testing.T) {
 			assert.Equal(t, test.expected, result)
 		})
 	}
+}
+
+// nodeIDOrder reads a sorted list back into its node names, so a test can
+// compare the whole order rather than only the winner.
+func nodeIDOrder(list NodeScoreList) string {
+	parts := make([]string, 0, len(list.NodeList))
+	for _, ns := range list.NodeList {
+		parts = append(parts, ns.NodeID)
+	}
+	return strings.Join(parts, ",")
+}
+
+// TestNodeScoreTieBreakIsDeterministic pins the property the filter's winner
+// depends on. calcScoreWithOptions scores one node per goroutine and appends as
+// they finish, so NodeList's input order is not reproducible between calls; the
+// winner is the last element after sorting. If the comparator treats equally
+// scored nodes as equal, an unstable sort hands the pod to whichever node won
+// the race that round - two Filter calls for the same pod (a requeued bind, an
+// extender timeout) can name different nodes, and "why this node" has no
+// answer. The comparator must therefore be a total order, and the tie must break
+// so that the last element is the smallest node name.
+func TestNodeScoreTieBreakIsDeterministic(t *testing.T) {
+	tied := [][]string{
+		{"node-a", "node-b", "node-c", "node-d"},
+		{"node-d", "node-c", "node-b", "node-a"},
+		{"node-c", "node-a", "node-d", "node-b"},
+		{"node-b", "node-d", "node-a", "node-c"},
+	}
+	want := "node-d,node-c,node-b,node-a"
+	for _, policy := range []string{util.NodeSchedulerPolicyBinpack.String(), util.NodeSchedulerPolicySpread.String()} {
+		for _, perm := range tied {
+			list := NodeScoreList{Policy: policy}
+			for _, id := range perm {
+				list.NodeList = append(list.NodeList, &NodeScore{
+					NodeID: id,
+					Node:   &corev1.Node{ObjectMeta: metav1.ObjectMeta{Name: id}},
+					Score:  5.0,
+				})
+			}
+			sort.Sort(list)
+			assert.Equal(t, want, nodeIDOrder(list), "policy %q, input %v", policy, perm)
+			assert.Equal(t, "node-a", list.NodeList[len(list.NodeList)-1].NodeID)
+		}
+	}
+}
+
+// TestNodeScoreTieBreakKeepsScorePrimary guards the fix against becoming a
+// name-based ranking: with unequal scores the node name must not move a worse
+// candidate ahead of a better one, in either policy.
+func TestNodeScoreTieBreakKeepsScorePrimary(t *testing.T) {
+	build := func(policy string) NodeScoreList {
+		list := NodeScoreList{Policy: policy}
+		for _, entry := range []struct {
+			id    string
+			score float32
+		}{
+			{"node-a", 1.0}, {"node-b", 9.0}, {"node-c", 5.0},
+		} {
+			list.NodeList = append(list.NodeList, &NodeScore{
+				NodeID: entry.id,
+				Node:   &corev1.Node{ObjectMeta: metav1.ObjectMeta{Name: entry.id}},
+				Score:  entry.score,
+			})
+		}
+		return list
+	}
+
+	binpack := build(util.NodeSchedulerPolicyBinpack.String())
+	sort.Sort(binpack)
+	assert.Equal(t, "node-a,node-c,node-b", nodeIDOrder(binpack))
+	assert.Equal(t, "node-b", binpack.NodeList[len(binpack.NodeList)-1].NodeID, "binpack packs onto the highest score")
+
+	spread := build(util.NodeSchedulerPolicySpread.String())
+	sort.Sort(spread)
+	assert.Equal(t, "node-b,node-c,node-a", nodeIDOrder(spread))
+	assert.Equal(t, "node-a", spread.NodeList[len(spread.NodeList)-1].NodeID, "spread empties onto the lowest score")
 }
 
 // setup initializes the devices with a given configuration.

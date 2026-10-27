@@ -100,20 +100,29 @@ func (l DeviceUsageList) Less(i, j int) bool {
 		if ui != uj {
 			return ui > uj
 		}
-		return ni < nj
+		if ni != nj {
+			return ni < nj
+		}
+		return l.tieBreakDevice(i, j)
 	}
 
 	// numa-bind: keep NUMA groups contiguous for Fit's same-NUMA accumulation.
 	if l.NumaBind {
 		if binpack {
 			if ni == nj {
-				return si < sj
+				if si != sj {
+					return si < sj
+				}
+				return l.tieBreakDevice(i, j)
 			}
 			return ni > nj
 		}
 		// default policy is spread
 		if ni == nj {
-			return si > sj
+			if si != sj {
+				return si > sj
+			}
+			return l.tieBreakDevice(i, j)
 		}
 		return ni < nj
 	}
@@ -123,13 +132,32 @@ func (l DeviceUsageList) Less(i, j int) bool {
 		if si != sj {
 			return si < sj
 		}
-		return ni < nj
+		if ni != nj {
+			return ni < nj
+		}
+		return l.tieBreakDevice(i, j)
 	}
 	// default policy is spread
 	if si != sj {
 		return si > sj
 	}
-	return ni < nj
+	if ni != nj {
+		return ni < nj
+	}
+	return l.tieBreakDevice(i, j)
+}
+
+// tieBreakDevice orders devices that every policy key already called equal.
+// Fit consumes this list from one end, so an unstable order here hands the same
+// pod a different GPU on each Filter call. Index is unique among a node's
+// devices of one vendor; the ID covers the mixed-vendor case where two backends
+// both report index 0, and matches the key the chain path already used.
+func (l DeviceUsageList) tieBreakDevice(i, j int) bool {
+	a, b := l.DeviceLists[i], l.DeviceLists[j]
+	if a.Device.Index != b.Device.Index {
+		return a.Device.Index < b.Device.Index
+	}
+	return a.Device.ID < b.Device.ID
 }
 
 // lessByChain compares devices i and j by the ordered sort-key chain parsed
@@ -169,7 +197,7 @@ func (l DeviceUsageList) lessByChain(i, j int) bool {
 		}
 	}
 	// Deterministic tiebreak when every chained key is equal.
-	return a.Device.Index < b.Device.Index
+	return l.tieBreakDevice(i, j)
 }
 
 func (l DeviceUsageList) DeepCopy() DeviceUsageList {

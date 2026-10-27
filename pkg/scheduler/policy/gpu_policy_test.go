@@ -18,6 +18,7 @@ package policy
 
 import (
 	"sort"
+	"strings"
 	"testing"
 
 	"github.com/Project-HAMi/HAMi/pkg/device"
@@ -969,4 +970,81 @@ func TestLessTrimsThePolicy(t *testing.T) {
 		l.DeviceLists[1].Device.Used = 3
 		assert.Equal(t, l.Less(0, 1), false, "policy %q", policy)
 	}
+}
+
+// deviceIDOrder reads a sorted device list back into its device ids, so a test
+// can compare the whole order rather than only the tail Fit consumes.
+func deviceIDOrder(list DeviceUsageList) string {
+	parts := make([]string, 0, len(list.DeviceLists))
+	for _, entry := range list.DeviceLists {
+		parts = append(parts, entry.Device.ID)
+	}
+	return strings.Join(parts, ",")
+}
+
+// TestDeviceUsageListTieBreakIsDeterministic pins the same property the node
+// score fix relies on, one level down: Fit walks the sorted device list and
+// takes what it needs from the tail, so devices that tie on every sort key must
+// still have one reproducible order. The chain path already breaks ties on
+// Device.Index; the single-policy paths stopped at NUMA, which left every
+// equally-scored GPU on one NUMA node in arbitrary order - so two Filter calls
+// for the same pod could hand out different GPUs on the same node.
+func TestDeviceUsageListTieBreakIsDeterministic(t *testing.T) {
+	entries := []struct {
+		id    string
+		index uint
+	}{
+		{"GPU-c", 2}, {"GPU-a", 0}, {"GPU-b", 1}, {"GPU-d", 3},
+	}
+	permutations := [][]int{{0, 1, 2, 3}, {3, 2, 1, 0}, {2, 0, 3, 1}, {1, 3, 0, 2}}
+	want := "GPU-a,GPU-b,GPU-c,GPU-d"
+
+	for _, policy := range []string{
+		util.GPUSchedulerPolicyBinpack.String(),
+		util.GPUSchedulerPolicySpread.String(),
+		util.GPUSchedulerPolicyMutex.String(),
+		util.GPUSchedulerPolicyNuma.String(),
+		"binpack,spread,numa",
+	} {
+		for _, perm := range permutations {
+			list := DeviceUsageList{Policy: policy}
+			for _, at := range perm {
+				entry := entries[at]
+				list.DeviceLists = append(list.DeviceLists, &DeviceListsScore{
+					Score: 5.0,
+					Device: &device.DeviceUsage{
+						ID:    entry.id,
+						Index: entry.index,
+						Numa:  1,
+					},
+				})
+			}
+			sort.Sort(list)
+			assert.Equal(t, want, deviceIDOrder(list), "policy %q, input order %v", policy, perm)
+		}
+	}
+}
+
+// TestDeviceUsageListTieBreakKeepsPrimaryKeys guards the tiebreak against
+// outranking the keys that express the scheduling policy: score, then NUMA, must
+// still decide whenever they differ.
+func TestDeviceUsageListTieBreakKeepsPrimaryKeys(t *testing.T) {
+	build := func(policy string) DeviceUsageList {
+		return DeviceUsageList{
+			Policy: policy,
+			DeviceLists: []*DeviceListsScore{
+				{Score: 5, Device: &device.DeviceUsage{ID: "GPU-z", Index: 0, Numa: 0}},
+				{Score: 1, Device: &device.DeviceUsage{ID: "GPU-y", Index: 1, Numa: 0}},
+				{Score: 1, Device: &device.DeviceUsage{ID: "GPU-x", Index: 2, Numa: 3}},
+			},
+		}
+	}
+
+	binpack := build(util.GPUSchedulerPolicyBinpack.String())
+	sort.Sort(binpack)
+	assert.Equal(t, "GPU-y,GPU-x,GPU-z", deviceIDOrder(binpack), "score first, then numa, then index")
+
+	spread := build(util.GPUSchedulerPolicySpread.String())
+	sort.Sort(spread)
+	assert.Equal(t, "GPU-z,GPU-y,GPU-x", deviceIDOrder(spread))
 }

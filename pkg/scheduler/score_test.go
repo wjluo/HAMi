@@ -18,6 +18,7 @@ package scheduler
 
 import (
 	"flag"
+	"sort"
 	"strconv"
 	"strings"
 	"testing"
@@ -5067,4 +5068,63 @@ func TestBinpackPacksSmallerCardOnMixedCapacityNode(t *testing.T) {
 	assert.Equal(t, len(containers[0]), 1)
 	assert.Equal(t, containers[0][0].UUID, "gpu-40g",
 		"binpack placed the pod by current usage instead of usage after placement")
+}
+
+// tiedScoreTestNodes builds candidate nodes that are indistinguishable to the
+// scorer: same capacity, same usage, same one GPU each. It is the shape the
+// filter hits most often at the start of a rollout, when several equally empty
+// nodes in one superpod all look equally good.
+func tiedScoreTestNodes() *map[string]*NodeUsage {
+	nodes := make(map[string]*NodeUsage, 3)
+	for _, name := range []string{"node-a", "node-m", "node-z"} {
+		node := &corev1.Node{ObjectMeta: metav1.ObjectMeta{Name: name}}
+		nodes[name] = &NodeUsage{
+			Node:     node,
+			NodeInfo: &device.NodeInfo{ID: name, Node: node},
+			Devices: policy.DeviceUsageList{
+				Policy: util.GPUSchedulerPolicyBinpack.String(),
+				DeviceLists: []*policy.DeviceListsScore{
+					{Device: &device.DeviceUsage{
+						ID: "gpu-" + name, Index: 0, Type: nvidia.NvidiaGPUDevice, Health: true,
+						Count: 10, Used: 1, Totalcore: 100, Usedcores: 10, Totalmem: 100, Usedmem: 10,
+					}},
+				},
+			},
+		}
+	}
+	return &nodes
+}
+
+// TestCalcScoreWinnerIsStableAcrossTiedNodes turns "the winner must not depend
+// on scheduling luck" into an executable statement. calcScoreWithOptions scores
+// each candidate in its own goroutine and appends the survivors as they return,
+// so the candidate order handed to the sort is not reproducible; the filter then
+// reads NodeList[len-1] as the chosen node. Tied scores with no tie-breaking key
+// therefore let two Filter calls for one pod name two different nodes - which is
+// what a requeued pod or an extender timeout observes. Running the round
+// repeatedly over the same tied candidates must still pick the same one.
+func TestCalcScoreWinnerIsStableAcrossTiedNodes(t *testing.T) {
+	requests := device.PodDeviceRequests{{
+		"hami.io/vgpu-devices-to-allocate": {
+			Nums: 1, Type: nvidia.NvidiaGPUDevice, MemPercentagereq: 40,
+		},
+	}}
+	pod := &corev1.Pod{ObjectMeta: metav1.ObjectMeta{
+		Name: "tied-score", Namespace: "default",
+	}}
+
+	var winner string
+	for round := range 200 {
+		result, err := (&Scheduler{}).calcScoreWithOptions(tiedScoreTestNodes(), requests, pod, map[string]string{}, false, false)
+		assert.NilError(t, err)
+		assert.Equal(t, 3, len(result.NodeList), "all tied candidates must survive the device fit")
+		sort.Sort(result)
+		chosen := result.NodeList[len(result.NodeList)-1].NodeID
+		if round == 0 {
+			winner = chosen
+			continue
+		}
+		assert.Equal(t, winner, chosen, "round %d picked a different node than round 0", round)
+	}
+	assert.Equal(t, "node-a", winner, "the tie must resolve to the smallest node name so a placement is reproducible")
 }
