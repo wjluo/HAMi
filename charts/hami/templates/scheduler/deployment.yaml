@@ -24,6 +24,20 @@ spec:
   {{- else }}
   replicas: 1
   {{- end }}
+  {{- if .Values.scheduler.leaderElect }}
+  {{- /*
+  /readyz only goes green for the replica holding the lease, and a lease is only
+  handed over by a replica that has already terminated. The default surge policy
+  of 25%/25% rounds maxUnavailable down to 0 at a single replica, so the new pod
+  would wait for a leadership the old pod never gives up and the rollout would
+  never finish. Replace in place instead: one pod down, then the next one up.
+  */}}
+  strategy:
+    type: RollingUpdate
+    rollingUpdate:
+      maxSurge: 0
+      maxUnavailable: 1
+  {{- end }}
   selector:
     matchLabels:
       app.kubernetes.io/component: hami-scheduler
