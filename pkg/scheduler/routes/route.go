@@ -180,10 +180,16 @@ func ReadyzRoute(s *scheduler.Scheduler) httprouter.Handle {
 
 		if s.GetLeaderManager().IsLeader() {
 			klog.V(5).Infoln("Scheduler extender is leader")
-		} else {
-			klog.V(3).Infoln("Scheduler extender has not become leader yet")
+			w.WriteHeader(http.StatusOK)
+			return
 		}
-		w.WriteHeader(http.StatusOK)
+		// Only the leader runs registration, so a standby's node cache is empty and
+		// its /filter would report a healthy cluster as full. Reporting ready here is
+		// what lets the extender Service keep a standby in its endpoints.
+		// When --leader-elect is off the manager is the dummy one and always reports
+		// leader, so single-replica deployments without election stay ready.
+		klog.V(3).Infoln("Scheduler extender has not become leader yet")
+		http.Error(w, "503: Scheduler extender has not become leader yet", http.StatusServiceUnavailable)
 	}
 }
 

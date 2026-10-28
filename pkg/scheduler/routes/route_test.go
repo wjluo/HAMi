@@ -26,10 +26,14 @@ import (
 	"os"
 	"strings"
 	"testing"
+	"time"
 
+	coordinationv1 "k8s.io/api/coordination/v1"
 	corev1 "k8s.io/api/core/v1"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/klog/v2"
 	extenderv1 "k8s.io/kube-scheduler/extender/v1"
+	"gotest.tools/v3/assert"
 
 	"github.com/Project-HAMi/HAMi/pkg/scheduler"
 	"github.com/Project-HAMi/HAMi/pkg/scheduler/config"
@@ -97,40 +101,108 @@ func TestWebHookRoute(t *testing.T) {
 	}
 }
 
-func TestReadyzRouteLeader(t *testing.T) {
-	// NewScheduler initializes with DummyLeaderManager(true) by default
-	s := scheduler.NewScheduler()
-
-	handler := ReadyzRoute(s)
-	req := httptest.NewRequest("GET", "/readyz", nil)
-	w := httptest.NewRecorder()
-
-	handler(w, req, nil)
-
-	if w.Code != 200 {
-		t.Errorf("Expected status 200 for readyz (leader), got %d", w.Code)
+// readyzLease builds the lease that says "this pod holds the lock". The holder
+// identity is hostname + "_" + uuid, exactly as kube-scheduler writes it, and
+// the leader manager matches itself with a prefix test.
+func readyzLease(hostname, namespace, name string) *coordinationv1.Lease {
+	holder := hostname + "_09b916af-2a24-4318-8ce3-ad3309992531"
+	now := metav1.NewMicroTime(time.Now())
+	duration := int32(15)
+	return &coordinationv1.Lease{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      name,
+			Namespace: namespace,
+		},
+		Spec: coordinationv1.LeaseSpec{
+			HolderIdentity:       &holder,
+			AcquireTime:          &now,
+			LeaseDurationSeconds: &duration,
+		},
 	}
 }
 
-func TestReadyzRouteNotLeader(t *testing.T) {
-	// Force NewScheduler to use real leader manager (no observed lease => IsLeader() == false)
-	origLeaderElect := config.LeaderElect
+// withRealLeaderElect points the manager at a lease of our own making, so the
+// test decides leadership by writing the lease instead of by hoping the default
+// (leader-election disabled) stays convenient.
+func withRealLeaderElect(t *testing.T) {
+	t.Helper()
+	origLeaderElect, origHostname := config.LeaderElect, config.HostName
+	origName, origNamespace := config.LeaderElectResourceName, config.LeaderElectResourceNamespace
 	config.LeaderElect = true
+	config.HostName = "readyz-host"
+	config.LeaderElectResourceName = "hami-scheduler"
+	config.LeaderElectResourceNamespace = "kube-system"
 	t.Cleanup(func() {
-		config.LeaderElect = origLeaderElect
+		config.LeaderElect, config.HostName = origLeaderElect, origHostname
+		config.LeaderElectResourceName, config.LeaderElectResourceNamespace = origName, origNamespace
 	})
+}
+
+func TestReadyzRouteElectDisabledIsAlwaysReady(t *testing.T) {
+	// A deployment that never asked for leader election has no lease to wait for.
+	// Failing readiness there would pull the only replica out of the extender
+	// Service endpoints and stop the cluster's GPU scheduling entirely.
+	origLeaderElect := config.LeaderElect
+	config.LeaderElect = false
+	t.Cleanup(func() { config.LeaderElect = origLeaderElect })
 
 	s := scheduler.NewScheduler()
-
 	handler := ReadyzRoute(s)
+
 	req := httptest.NewRequest("GET", "/readyz", nil)
 	w := httptest.NewRecorder()
-
 	handler(w, req, nil)
 
-	if w.Code != 200 {
-		t.Errorf("Expected status 200 for readyz (not leader), got %d", w.Code)
-	}
+	assert.Equal(t, w.Code, http.StatusOK)
+}
+
+func TestReadyzRouteLeaderIsReady(t *testing.T) {
+	withRealLeaderElect(t)
+	s := scheduler.NewScheduler()
+	s.GetLeaderManager().OnAdd(readyzLease(config.HostName, config.LeaderElectResourceNamespace, config.LeaderElectResourceName), true)
+	assert.Equal(t, true, s.GetLeaderManager().IsLeader(), "fixture must produce a leader")
+
+	req := httptest.NewRequest("GET", "/readyz", nil)
+	w := httptest.NewRecorder()
+	ReadyzRoute(s)(w, req, nil)
+
+	assert.Equal(t, w.Code, http.StatusOK)
+	assert.Equal(t, "", w.Body.String())
+}
+
+func TestReadyzRouteNotLeaderIsNotReady(t *testing.T) {
+	// The standby answers /filter from a cache that registration fills only for
+	// the leader (see Scheduler.register), so a 200 here advertises a replica
+	// that is one Service round-robin away from reporting a healthy cluster as
+	// empty. Readiness has to say what it actually means.
+	withRealLeaderElect(t)
+	s := scheduler.NewScheduler()
+	assert.Equal(t, false, s.GetLeaderManager().IsLeader(), "no lease observed => standby")
+
+	req := httptest.NewRequest("GET", "/readyz", nil)
+	w := httptest.NewRecorder()
+	ReadyzRoute(s)(w, req, nil)
+
+	assert.Equal(t, w.Code, http.StatusServiceUnavailable)
+	assert.Assert(t, strings.Contains(strings.ToLower(w.Body.String()), "leader"),
+		"the response has to name the cause, got %q", w.Body.String())
+}
+
+func TestReadyzRouteRegainsReadinessWhenElected(t *testing.T) {
+	// Rollouts hand the lease over: the new pod starts as standby and must become
+	// ready by itself, otherwise this fix turns every restart into a manual job.
+	withRealLeaderElect(t)
+	s := scheduler.NewScheduler()
+	handler := ReadyzRoute(s)
+
+	w := httptest.NewRecorder()
+	handler(w, httptest.NewRequest("GET", "/readyz", nil), nil)
+	assert.Equal(t, w.Code, http.StatusServiceUnavailable)
+
+	s.GetLeaderManager().OnAdd(readyzLease(config.HostName, config.LeaderElectResourceNamespace, config.LeaderElectResourceName), true)
+	w = httptest.NewRecorder()
+	handler(w, httptest.NewRequest("GET", "/readyz", nil), nil)
+	assert.Equal(t, w.Code, http.StatusOK)
 }
 
 func TestCheckBodyNil(t *testing.T) {
